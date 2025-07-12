@@ -3,7 +3,7 @@
 """
 import logging
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, List, Union
 
 from fastapi import APIRouter, HTTPException, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,55 +35,68 @@ async def verify_webhook_signature(request: Request) -> bool:
 
 @router.post("/webhook", response_model=WebhookResponse)
 async def handle_altegio_webhook(
-    payload: AltegioWebhookPayload,
+    payload: Union[AltegioWebhookPayload, List[AltegioWebhookPayload]],
     request: Request,
     db: AsyncSession = Depends(get_db_session)
 ):
     """
     Обработка webhook от Altegio
     
-    Принимает данные о записях/клиентах от Altegio,
+    Принимает данные о записях/клиентах от Altegio (может быть одиночный объект или массив),
     сохраняет в БД и инициирует процесс фискализации через Webkassa
     """
     try:
-        logger.info(f"Received webhook: company_id={payload.company_id}, "
-                   f"resource={payload.resource}, resource_id={payload.resource_id}, "
-                   f"status={payload.status}")
+        # Нормализуем payload к массиву для единообразной обработки
+        if isinstance(payload, list):
+            webhook_list = payload
+        else:
+            webhook_list = [payload]
         
-        # Проверка подписи webhook (опционально)
-        if not await verify_webhook_signature(request):
-            logger.warning("Invalid webhook signature")
-            raise HTTPException(status_code=401, detail="Invalid webhook signature")
+        processed_records = []
         
-        # Сохранение webhook в базу данных
-        webhook_record = WebhookRecord(
-            company_id=payload.company_id,
-            resource=payload.resource,
-            resource_id=payload.resource_id,
-            status=payload.status,
-            client_phone=payload.data.client.phone,
-            client_name=payload.data.client.name,
-            record_date=datetime.fromisoformat(payload.data.date.replace(' ', 'T')),
-            services_data=payload.data.services,
-            comment=payload.data.comment,
-            raw_data=payload.dict(),
-            processed=False,
-            created_at=datetime.utcnow()
-        )
-        
-        db.add(webhook_record)
-        await db.commit()
-        await db.refresh(webhook_record)
-        
-        logger.info(f"Webhook saved to database with ID: {webhook_record.id}")
-        
-        # TODO: Инициировать процесс фискализации через Webkassa
-        await process_fiscalization(webhook_record, payload)
+        # Обрабатываем каждый webhook в массиве
+        for single_payload in webhook_list:
+            logger.info(f"Processing webhook: company_id={single_payload.company_id}, "
+                       f"resource={single_payload.resource}, resource_id={single_payload.resource_id}, "
+                       f"status={single_payload.status}")
+            
+            # Проверка подписи webhook (опционально)
+            if not await verify_webhook_signature(request):
+                logger.warning("Invalid webhook signature")
+                raise HTTPException(status_code=401, detail="Invalid webhook signature")
+            
+            # Сохранение webhook в базу данных
+            webhook_record = WebhookRecord(
+                company_id=single_payload.company_id,
+                resource=single_payload.resource,
+                resource_id=single_payload.resource_id,
+                status=single_payload.status,
+                client_phone=single_payload.data.client.phone,
+                client_name=single_payload.data.client.name,
+                record_date=datetime.fromisoformat(single_payload.data.date.replace(' ', 'T')),
+                services_data=[service.dict() for service in single_payload.data.services],
+                comment=single_payload.data.comment,
+                raw_data=single_payload.dict(),
+                processed=False,
+                created_at=datetime.utcnow()
+            )
+            
+            db.add(webhook_record)
+            await db.commit()
+            await db.refresh(webhook_record)
+            
+            logger.info(f"Webhook saved to database with ID: {webhook_record.id}")
+            processed_records.append(webhook_record.id)
+            
+            # TODO: Инициировать процесс фискализации через Webkassa
+            await process_fiscalization(webhook_record, single_payload)
         
         return WebhookResponse(
             success=True,
-            message="Webhook processed successfully",
-            record_id=webhook_record.id
+            message=f"Successfully processed {len(processed_records)} webhook(s)",
+            record_id=processed_records[0] if processed_records else None,
+            record_ids=processed_records,
+            processed_count=len(processed_records)
         )
         
     except Exception as e:
