@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/css/style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <main class="main-content success-page">
+            <div class="success-card">
+                <div class="success-icon">
+                    <svg width="80" height="80" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="12" cy="12" r="10" fill="#10B981"/>
+                        <path d="M9 12l2 2 4-4" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </div>
+                
+                <h1 class="success-title">{{ title }}</h1>
+                <p class="success-message">{{ message }}</p>
+                
+                <div class="success-details">
+                    <div class="detail-item">
+                        <span class="detail-label">Статус:</span>
+                        <span class="detail-value success">Оплачено</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="detail-label">Время:</span>
+                        <span class="detail-value">{{ moment().format('DD.MM.YYYY HH:mm') }}</span>
+                    </div>
+                </div>
+                
+                <div class="success-actions">
+                    <a href="/acquire" class="btn-secondary">Новая оплата</a>
+                    <a href="/" class="btn-primary">На главную</a>
+                </div>
+            </div>
+            
+            <div class="info-notice">
+                <p><strong>Информация:</strong> Чек будет отправлен на указанный email в течение нескольких минут.</p>
+            </div>
+        </main>
+
+        <footer class="footer">
+            <p>&copy; 2025 Altegio-Webkassa Integration. Все права защищены.</p>
+        </footer>
+    </div>
+</body>
+</html>
+

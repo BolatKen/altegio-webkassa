@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }} - {{ company_name }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/css/style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>{{ company_name }}</h1>
+            <p class="subtitle">Оплата услуг онлайн</p>
+        </header>
+
+        <main class="main-content">
+            <div class="payment-card">
+                <div class="service-info">
+                    <h2>{{ service_name }}</h2>
+                    <div class="amount-display">
+                        <span class="amount">{{ amount }} ₸</span>
+                        <span class="amount-label">к оплате</span>
+                    </div>
+                </div>
+
+                <form id="payment-form" class="payment-form" action="/acquire/payment" method="post">
+                    <div class="form-group">
+                        <label for="client-name">Имя клиента</label>
+                        <input type="text" id="client-name" name="client_name" required 
+                               placeholder="Введите ваше имя">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="client-phone">Телефон</label>
+                        <input type="tel" id="client-phone" name="client_phone" required 
+                               placeholder="+7 (___) ___-__-__" pattern="^\+7\s?\(?\d{3}\)?\s?\d{3}-?\d{2}-?\d{2}$">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="client-email">Email (необязательно)</label>
+                        <input type="email" id="client-email" name="client_email" 
+                               placeholder="example@email.com">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="payment-method">Способ оплаты</label>
+                        <select id="payment-method" name="payment_method" required>
+                            <option value="">Выберите способ оплаты</option>
+                            <option value="card">Банковская карта</option>
+                            <option value="kaspi">Kaspi Pay</option>
+                            <option value="halyk">Halyk Bank</option>
+                        </select>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="submit" class="btn-primary" id="pay-button">
+                            <span class="btn-text">Оплатить {{ amount }} ₸</span>
+                            <span class="btn-loader" style="display: none;">Обработка...</span>
+                        </button>
+                    </div>
+                </form>
+
+                <div class="security-info">
+                    <div class="security-item">
+                        <span class="security-icon">🔒</span>
+                        <span>Безопасная оплата</span>
+                    </div>
+                    <div class="security-item">
+                        <span class="security-icon">✓</span>
+                        <span>SSL шифрование</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TODO: Добавить интеграцию с реальной платежной системой -->
+            <div class="info-notice">
+                <p><strong>Внимание:</strong> Это демо-версия формы оплаты. 
+                   Интеграция с реальной платежной системой будет добавлена позже.</p>
+            </div>
+        </main>
+
+        <footer class="footer">
+            <p>&copy; 2025 {{ company_name }}. Все права защищены.</p>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', path='/js/payment.js') }}"></script>
+</body>
+</html>
+

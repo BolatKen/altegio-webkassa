@@ -1,0 +1,2 @@
+# Altegio-Webkassa Integration App
+

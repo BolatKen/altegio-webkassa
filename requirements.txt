@@ -1,0 +1,35 @@
+# FastAPI and ASGI server
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# Database
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+asyncpg==0.29.0
+alembic==1.13.1
+
+# Data validation and serialization
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Templates and static files
+jinja2==3.1.2
+python-multipart==0.0.6
+
+# HTTP client for external API calls
+httpx==0.25.2
+requests==2.31.0
+
+# CORS support
+# python-cors==1.7.0
+
+# Environment variables
+python-dotenv==1.0.0
+
+# Logging
+structlog==23.2.0
+
+# Development and testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+
