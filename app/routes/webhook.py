@@ -197,6 +197,10 @@ async def send_to_webkassa(data: dict, api_key: str) -> dict:
     """
     webkassa_api_url = os.getenv("WEBKASSA_API_URL", "https://api.webkassa.kz")
     
+    # ОТЛАДКА: логируем переменную окружения
+    logger.info(f"🔍 WEBKASSA_API_URL from env: '{webkassa_api_url}'")
+    logger.info(f"🔍 All WEBKASSA env vars: {[k for k in os.environ.keys() if 'WEBKASSA' in k]}")
+    
     # Формируем правильный URL для создания чека
     endpoint_url = f"{webkassa_api_url.rstrip('/')}/api/Check"
     
