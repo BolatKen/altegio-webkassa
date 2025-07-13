@@ -255,7 +255,10 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
             "Count": service.amount,
             "Price": service.cost / 100,  # Конвертация из копеек в тенге
             "PositionName": service.title,
-            "Discount": service.discount / 100 # Скидка в тенге
+            "Discount": service.discount / 100,  # Скидка в тенге
+            "Tax": "0",
+            "TaxType": "0", 
+            "TaxPercent": "0"
         }
         positions.append(position)
         total_sum_for_webkassa += service_total
@@ -300,11 +303,13 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
 
     webkassa_data = {
         "CashboxUniqueNumber": os.getenv("WEBKASSA_CASHBOX_ID"),
-        "OperationType": 2, # Продажа
+        "OperationType": 3,  # Продажа
         "Positions": positions,
+        "TicketModifiers": [],
         "Payments": payments,
+        "Change": 0.0,
         "RoundType": 2,
-        "ExternalCheckNumber": str(uuid.uuid4()), # Генерируем уникальный ID для идемпотентности
+        "ExternalCheckNumber": str(uuid.uuid4()),  # Генерируем уникальный ID для идемпотентности
         "CustomerPhone": client_phone
     }
 
@@ -336,13 +341,13 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
             logger.error("❌ Failed to obtain API key")
             return {"success": False, "error": "No API key found and unable to refresh"}
     
-    api_key = api_key_record.api_key
-    logger.info(f"🔑 Using API key from database (ID: {api_key_record.id})")
-    logger.info(f"🔑 Key first 20 chars: {api_key[:20]}...")
-    logger.info(f"🔑 Key last 20 chars: ...{api_key[-20:]}")
+    api_token = api_key_record.api_key
+    logger.info(f"🔑 Using API token from database (ID: {api_key_record.id})")
+    logger.info(f"🔑 Token first 20 chars: {api_token[:20]}...")
+    logger.info(f"🔑 Token last 20 chars: ...{api_token[-20:]}")
     
     # Первая попытка отправки
-    result = await send_to_webkassa(webkassa_data, api_key)
+    result = await send_to_webkassa(webkassa_data, api_token)
     
     # Проверяем, нет ли ошибки авторизации
     if not result["success"] and "errors" in result:
@@ -359,7 +364,7 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
             # Пытаемся обновить ключ
             refreshed_key = await refresh_webkassa_api_key(db)
             
-            if refreshed_key and refreshed_key.api_key != api_key:
+            if refreshed_key and refreshed_key.api_key != api_token:
                 logger.info("✅ Successfully refreshed API key, retrying request...")
                 
                 # Повторяем запрос с новым ключом
@@ -376,7 +381,7 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
     return result
 
 
-async def send_to_webkassa(data: dict, api_key: str) -> dict:
+async def send_to_webkassa(data: dict, api_token: str) -> dict:
     """
     Отправляет подготовленные данные в API Webkassa.
     """
@@ -389,17 +394,26 @@ async def send_to_webkassa(data: dict, api_key: str) -> dict:
     # Формируем правильный URL для создания чека
     endpoint_url = f"{webkassa_api_url.rstrip('/')}/api/Check"
     
+    # Правильные заголовки для Webkassa API
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"{api_key}"  # Используем Bearer токен
+        "X-API-KEY": "WKD-68D0CA3C-191F-4DBB-B280-D483724EA7A9"  # Фиксированный API ключ
+    }
+    
+    # Добавляем Token в тело запроса
+    request_data = {
+        "Token": api_token,  # Токен идет в тело запроса
+        **data  # Остальные данные
     }
 
     logger.info(f"🌐 Sending to Webkassa API: {endpoint_url}")
-    logger.info(f"🔑 Using Bearer token: {api_key[:20]}...")
+    logger.info(f"🔑 Using API token in body: {api_token[:20]}...")
+    logger.info(f"📋 Request headers: {headers}")
+    logger.info(f"📋 Request data: {json.dumps(request_data, ensure_ascii=False, indent=2)}")
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(endpoint_url, json=data, headers=headers, timeout=30)
+            response = await client.post(endpoint_url, json=request_data, headers=headers, timeout=30)
             response_data = response.json()
             
             # Логируем ответ с декодированием Unicode
