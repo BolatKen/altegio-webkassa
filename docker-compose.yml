@@ -46,9 +46,13 @@ services:
       - ALTEGIO_USER_ID=${ALTEGIO_USER_ID}
       - WEBKASSA_API_URL=${WEBKASSA_API_URL}
       - WEBKASSA_CASHBOX_ID=${WEBKASSA_CASHBOX_ID}
+      - WEBKASSA_LOGIN=${WEBKASSA_LOGIN}
+      - WEBKASSA_PASSWORD=${WEBKASSA_PASSWORD}
+      - WEBKASSA_AUTH_URL=${WEBKASSA_AUTH_URL}
     volumes:
       - ./logs:/app/logs
       - ./app:/app/app:ro
+      - ./scripts:/app/scripts:ro
     ports:
       - "8000:8000"
     depends_on:

@@ -1,0 +1,8 @@
+# Cron задача для автоматического обновления API ключа Webkassa каждый день в 5 утра
+# Добавить эту строку в crontab пользователя root: sudo crontab -e
+
+# Обновление API ключа Webkassa каждый день в 5:00 утра
+0 5 * * * /usr/local/bin/update-webkassa-key.sh
+
+# Альтернативный вариант с дополнительным логированием
+# 0 5 * * * /usr/local/bin/update-webkassa-key.sh >> /var/log/webkassa-cron.log 2>&1

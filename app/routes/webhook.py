@@ -102,6 +102,11 @@ def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document: Dict
     """
     Преобразует данные из Altegio webhook и документа в формат, ожидаемый Webkassa.
     """
+    logger.info(f"🔄 Starting data transformation for Webkassa")
+    logger.info(f"📥 Input webhook data: client_phone={payload.data.client.phone}, resource_id={payload.resource_id}")
+    logger.info(f"📥 Input services count: {len(payload.data.services)}")
+    logger.info(f"📥 Input altegio_document transactions count: {len(altegio_document.get('data', []))}")
+    
     # Извлечение данных из Altegio webhook
     client_phone = payload.data.client.phone
     resource_id = payload.resource_id
@@ -115,20 +120,29 @@ def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document: Dict
     payments = []
     total_sum_for_webkassa = 0
 
+    logger.info(f"🛍️ Processing {len(services)} services from webhook:")
     # Обработка позиций (услуг) из webhook
-    for service in services:
-        positions.append({
+    for i, service in enumerate(services):
+        service_total = (service.cost * service.amount - service.discount) / 100
+        position = {
             "Count": service.amount,
             "Price": service.cost / 100,  # Конвертация из копеек в тенге
             "PositionName": service.title,
             "Discount": service.discount / 100 # Скидка в тенге
-        })
-        total_sum_for_webkassa += (service.cost * service.amount - service.discount) / 100
+        }
+        positions.append(position)
+        total_sum_for_webkassa += service_total
+        
+        logger.info(f"  📦 Service {i+1}: {service.title}")
+        logger.info(f"     💵 Cost: {service.cost/100} тенге x {service.amount} = {(service.cost * service.amount)/100} тенге")
+        logger.info(f"     🎫 Discount: {service.discount/100} тенге")
+        logger.info(f"     💰 Total: {service_total} тенге")
 
+    logger.info(f"💳 Processing {len(transactions)} transactions from Altegio document:")
     # Обработка платежей из Altegio document
     # В данном примере, мы берем только транзакции с положительной суммой (поступления)
     # и маппим их на типы оплаты Webkassa
-    for transaction in transactions:
+    for i, transaction in enumerate(transactions):
         if transaction.get('amount', 0) > 0:
             payment_type = 1 # По умолчанию банковская карта
             account_title = transaction.get('account', {}).get('title', '').lower()
@@ -138,23 +152,26 @@ def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document: Dict
                 payment_type = 0 # Наличные
             # TODO: Добавить другие типы оплаты, если необходимо
 
-            payments.append({
-                
-
-
-"Sum": transaction["amount"],
+            payment = {
+                "Sum": transaction["amount"],
                 "PaymentType": payment_type
-            })
+            }
+            payments.append(payment)
+            
+            payment_type_name = "Наличные" if payment_type == 0 else "Безналичный"
+            logger.info(f"  💳 Payment {i+1}: {transaction['amount']} тенге ({payment_type_name})")
+            logger.info(f"     🏦 Account: {transaction.get('account', {}).get('title', 'Unknown')}")
 
     # Если платежи не были найдены в документе, используем общую сумму из webhook
     if not payments:
-        payments.append({
+        default_payment = {
             "Sum": total_sum_for_webkassa,
             "PaymentType": 1 # По умолчанию банковская карта
-        })
+        }
+        payments.append(default_payment)
+        logger.warning(f"⚠️ No payments found in Altegio document, using default payment: {total_sum_for_webkassa} тенге (Безналичный)")
 
     webkassa_data = {
-        "Token": webkassa_token,
         "CashboxUniqueNumber": os.getenv("WEBKASSA_CASHBOX_ID"),
         "OperationType": 2, # Продажа
         "Positions": positions,
@@ -164,7 +181,13 @@ def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document: Dict
         "CustomerPhone": client_phone
     }
 
-    logger.info(f"Prepared Webkassa data: {webkassa_data}")
+    logger.info(f"✅ Data transformation completed:")
+    logger.info(f"   📞 Customer phone: {client_phone}")
+    logger.info(f"   📦 Positions count: {len(positions)}")
+    logger.info(f"   💳 Payments count: {len(payments)}")
+    logger.info(f"   💰 Total amount: {total_sum_for_webkassa} тенге")
+    logger.info(f"   🔑 Token will be sent in Authorization header")
+    
     return webkassa_data
 
 
@@ -172,18 +195,22 @@ async def send_to_webkassa(data: dict, api_key: str) -> dict:
     """
     Отправляет подготовленные данные в API Webkassa.
     """
-    webkassa_api_url = os.getenv("WEBKASSA_API_URL")
-    if not webkassa_api_url:
-        raise ValueError("Webkassa API URL not configured in .env")
-
+    webkassa_api_url = os.getenv("WEBKASSA_API_URL", "https://api.webkassa.kz")
+    
+    # Формируем правильный URL для создания чека
+    endpoint_url = f"{webkassa_api_url.rstrip('/')}/api/Check"
+    
     headers = {
         "Content-Type": "application/json",
-        "X-API-KEY": api_key # Используем X-API-KEY, как указано в документации
+        "Authorization": f"Bearer {api_key}"  # Используем Bearer токен
     }
+
+    logger.info(f"🌐 Sending to Webkassa API: {endpoint_url}")
+    logger.info(f"🔑 Using Bearer token: {api_key[:20]}...")
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(webkassa_api_url, json=data, headers=headers, timeout=30)
+            response = await client.post(endpoint_url, json=data, headers=headers, timeout=30)
             response.raise_for_status()
             return response.json()
     except httpx.RequestError as e:
@@ -208,11 +235,17 @@ async def handle_altegio_webhook(
     Поддерживает как одиночные объекты, так и массивы webhook
     """
     try:
+        # Логируем сырые данные для отладки
+        body = await request.body()
+        logger.info(f"🔍 Raw webhook data received: {body.decode('utf-8')}")
+        
         # Нормализуем payload к массиву для единообразной обработки
         if isinstance(payload, list):
             webhook_list = payload
+            logger.info(f"📦 Received webhook array with {len(webhook_list)} items")
         else:
             webhook_list = [payload]
+            logger.info(f"📦 Received single webhook item, normalized to array")
         
         processed_records = []
         
@@ -226,9 +259,24 @@ async def handle_altegio_webhook(
                 raise HTTPException(status_code=401, detail="Invalid webhook signature")
             
             # Проверяем условия для обработки
-            if not (single_payload.resource == 'record' and 
-                    single_payload.data.comment and 'фч' in single_payload.data.comment and 
-                    single_payload.data.paid_full == 1):
+            comment_text = single_payload.data.comment or ""
+            has_fch = 'фч' in comment_text.lower() if comment_text else False
+            
+            conditions_met = (
+                single_payload.resource == 'record' and 
+                single_payload.data.comment and has_fch and 
+                single_payload.data.paid_full == 1
+            )
+            
+            logger.info(f"🔍 Checking processing conditions for webhook {single_payload.resource_id}:")
+            logger.info(f"   📋 Resource: {single_payload.resource} (required: 'record') {'✅' if single_payload.resource == 'record' else '❌'}")
+            logger.info(f"   💬 Comment: '{comment_text}' (must contain 'фч') {'✅' if has_fch else '❌'}")
+            logger.info(f"   💬 Comment bytes: {comment_text.encode('utf-8') if comment_text else b''}")
+            logger.info(f"   💬 Contains 'фч': {has_fch}")
+            logger.info(f"   💰 Paid full: {single_payload.data.paid_full} (required: 1) {'✅' if single_payload.data.paid_full == 1 else '❌'}")
+            logger.info(f"   🎯 Overall result: {'✅ PROCESSING' if conditions_met else '❌ SKIPPING'}")
+            
+            if not conditions_met:
                 logger.info(f"Webhook {single_payload.resource_id} does not meet the required conditions for processing.")
                 continue  # Пропускаем этот webhook, но продолжаем обработку остальных
 
@@ -305,10 +353,12 @@ async def handle_altegio_webhook(
                 # Попытка получить документ Altegio
                 altegio_document = None
                 try:
+                    logger.info(f"Requesting Altegio document: company_id={single_payload.company_id}, document_id={altegio_document_id}")
                     altegio_document = await get_altegio_document(single_payload.company_id, altegio_document_id)
-                    logger.info(f"Fetched Altegio document for resource_id {single_payload.resource_id}")
+                    logger.info(f"✅ Successfully fetched Altegio document for resource_id {single_payload.resource_id}")
+                    logger.info(f"📄 Altegio document content: {json.dumps(altegio_document, indent=2, ensure_ascii=False)}")
                 except HTTPException as altegio_error:
-                    logger.warning(f"Failed to fetch Altegio document for resource_id {single_payload.resource_id}: {altegio_error.detail}")
+                    logger.warning(f"❌ Failed to fetch Altegio document for resource_id {single_payload.resource_id}: {altegio_error.detail}")
                     # Продолжаем обработку без документа Altegio
                     altegio_document = {"data": []}
 
@@ -324,10 +374,17 @@ async def handle_altegio_webhook(
                 webkassa_token = webkassa_api_key_obj.user_id
 
                 fiscalization_data = prepare_webkassa_data(single_payload, altegio_document, webkassa_token)
-                logger.info(f"Prepared data for Webkassa: {fiscalization_data}")
+                logger.info(f"💰 Prepared Webkassa fiscalization data:")
+                logger.info(f"📋 Positions: {json.dumps(fiscalization_data.get('Positions', []), indent=2, ensure_ascii=False)}")
+                logger.info(f"💳 Payments: {json.dumps(fiscalization_data.get('Payments', []), indent=2, ensure_ascii=False)}")
+                logger.info(f"🧾 Full Webkassa request: {json.dumps(fiscalization_data, indent=2, ensure_ascii=False)}")
 
                 webkassa_response = await send_to_webkassa(fiscalization_data, webkassa_api_key)
-                logger.info(f"Webkassa API response: {webkassa_response}")
+                logger.info(f"📤 Webkassa API response received:")
+                logger.info(f"🎯 Response: {json.dumps(webkassa_response, indent=2, ensure_ascii=False)}")
+                
+                is_success = webkassa_response.get("success", False)
+                logger.info(f"{'✅ SUCCESS' if is_success else '❌ FAILED'}: Webkassa fiscalization {'completed' if is_success else 'failed'}")
 
                 webhook_record.processed = True
                 webhook_record.processed_at = datetime.utcnow()

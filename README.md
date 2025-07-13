@@ -44,8 +44,6 @@ altegio-webkassa-integration/
 └── README.md                     # Документация
 ```
 
-
-
 ## 🔧 Требования
 
 ### Системные требования
@@ -121,7 +119,44 @@ docker-compose ps
 - **Страница оплаты**: http://localhost/acquire
 - **Health check**: http://localhost/health
 
-## 🔗 API Endpoints
+## � Автоматическое обновление API ключа Webkassa
+
+Система поддерживает автоматическое обновление API ключа Webkassa каждый день в 5 утра.
+
+### Быстрая установка
+
+```bash
+# Автоматическая установка системы обновления
+sudo scripts/install-auto-update.sh
+```
+
+### Настройка credentials
+
+Добавьте в `.env` файл:
+
+```env
+# Webkassa credentials для автоматического обновления
+WEBKASSA_LOGIN=your_webkassa_login
+WEBKASSA_PASSWORD=your_webkassa_password
+WEBKASSA_AUTH_URL=https://api.webkassa.kz/api/login
+```
+
+### Мониторинг
+
+```bash
+# Статус автоматического обновления
+sudo systemctl status webkassa-key-update.timer
+
+# Логи обновлений
+sudo journalctl -u webkassa-key-update.service -f
+
+# Следующий запуск
+sudo systemctl list-timers webkassa-key-update.timer
+```
+
+**Подробная документация**: [scripts/README.md](scripts/README.md)
+
+## �🔗 API Endpoints
 
 ### Webhook от Altegio
 
@@ -163,7 +198,6 @@ GET /api/webhook/status/{record_id}
 ```http
 GET /acquire
 ```
-
 
 ## 🌐 Развертывание в продакшене
 
@@ -301,12 +335,12 @@ async def send_to_webkassa(fiscalization_data):
     """
     webkassa_url = os.getenv("WEBKASSA_API_URL")
     api_token = os.getenv("WEBKASSA_API_TOKEN")
-    
+
     headers = {
         "Authorization": f"Bearer {api_token}",
         "Content-Type": "application/json"
     }
-    
+
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{webkassa_url}/api/receipts",
@@ -376,7 +410,6 @@ async def process_fiscalization_with_retry(webhook_record, max_retries=3):
                 # Ждем перед повторной попыткой
                 await asyncio.sleep(2 ** attempt)
 ```
-
 
 ## 🐛 Устранение неполадок
 
@@ -449,6 +482,7 @@ docker-compose exec db du -sh /var/lib/postgresql/data
 ### Логирование
 
 Логи сохраняются в:
+
 - `logs/errors.log` - ошибки приложения
 - Nginx access/error logs в контейнере
 - PostgreSQL logs в контейнере
@@ -487,7 +521,7 @@ def verify_altegio_signature(payload, signature, secret):
         payload.encode(),
         hashlib.sha256
     ).hexdigest()
-    
+
     return hmac.compare_digest(signature, expected_signature)
 ```
 
@@ -529,4 +563,3 @@ def verify_altegio_signature(payload, signature, secret):
 ---
 
 **Создано с ❤️ для интеграции Altegio и Webkassa**
-

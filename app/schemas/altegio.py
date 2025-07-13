@@ -16,20 +16,20 @@ class AltegioClient(BaseModel):
     """Модель клиента из Altegio"""
     id: int = Field(..., description="ID клиента")
     name: str = Field(..., description="Имя клиента")
-    surname: Optional[str] = Field(None, description="Фамилия клиента")
-    patronymic: Optional[str] = Field(None, description="Отчество клиента")
+    surname: Optional[str] = Field("", description="Фамилия клиента")  # Значение по умолчанию
+    patronymic: Optional[str] = Field("", description="Отчество клиента")  # Значение по умолчанию
     display_name: str = Field(..., description="Отображаемое имя клиента")
-    comment: Optional[str] = Field(None, description="Комментарий к клиенту")
+    comment: Optional[str] = Field("", description="Комментарий к клиенту")  # Значение по умолчанию
     phone: str = Field(..., description="Телефон клиента")
-    card: Optional[str] = Field(None, description="Номер карты клиента")
-    email: Optional[str] = Field(None, description="Email клиента")
+    card: Optional[str] = Field("", description="Номер карты клиента")  # Значение по умолчанию
+    email: Optional[str] = Field("", description="Email клиента")  # Значение по умолчанию
     success_visits_count: int = Field(..., description="Количество успешных визитов")
     fail_visits_count: int = Field(..., description="Количество неуспешных визитов")
     discount: int = Field(..., description="Скидка клиента")
-    custom_fields: List[Any] = Field(..., description="Пользовательские поля клиента")
+    custom_fields: List[Any] = Field(default_factory=list, description="Пользовательские поля клиента")  # Значение по умолчанию
     sex: int = Field(..., description="Пол клиента (0 - не указан, 1 - мужской, 2 - женский)")
-    birthday: Optional[str] = Field(None, description="День рождения клиента")
-    client_tags: List[AltegioClientTag] = Field(..., description="Теги клиента")
+    birthday: Optional[str] = Field("", description="День рождения клиента")  # Значение по умолчанию
+    client_tags: List[AltegioClientTag] = Field(default_factory=list, description="Теги клиента")  # Значение по умолчанию
 
 
 class AltegioService(BaseModel):
@@ -55,13 +55,13 @@ class AltegioPosition(BaseModel):
 class AltegioStaff(BaseModel):
     """Модель сотрудника из Altegio"""
     id: int
-    api_id: Optional[str]
+    api_id: Optional[str] = Field(None, description="API ID сотрудника (может отсутствовать)")
     name: str
     specialization: str
     position: AltegioPosition
     avatar: str
     avatar_big: str
-    rating: int
+    rating: float  # Изменили с int на float, так как Altegio отправляет дробные числа
     votes_count: int
 
 
@@ -73,7 +73,7 @@ class AltegioDocument(BaseModel):
     user_id: int
     company_id: int
     number: int
-    comment: Optional[str]
+    comment: Optional[str] = Field("", description="Комментарий к документу")
     date_created: str
     category_id: int
     visit_id: int
@@ -99,12 +99,12 @@ class AltegioRecordData(BaseModel):
     length: int = Field(..., description="Длительность в секундах")
     sms_before: int = Field(..., description="SMS до")
     sms_now: int = Field(..., description="SMS сейчас")
-    sms_now_text: str = Field(..., description="Текст SMS сейчас")
+    sms_now_text: str = Field("", description="Текст SMS сейчас")  # Добавляем значение по умолчанию
     email_now: int = Field(..., description="Email сейчас")
     notified: int = Field(..., description="Уведомлено")
     master_request: int = Field(..., description="Запрос мастера")
     api_id: str = Field(..., description="API ID")
-    from_url: str = Field(..., description="URL, с которого сделана запись")
+    from_url: str = Field("", description="URL, с которого сделана запись")  # Добавляем значение по умолчанию
     review_requested: int = Field(..., description="Запрошен отзыв")
     created_user_id: int = Field(..., description="ID пользователя, создавшего запись")
     deleted: bool = Field(..., description="Удалено")
@@ -114,11 +114,11 @@ class AltegioRecordData(BaseModel):
     is_update_blocked: bool = Field(..., description="Обновление заблокировано")
     activity_id: int = Field(..., description="ID активности")
     bookform_id: int = Field(..., description="ID формы бронирования")
-    record_from: str = Field(..., description="Откуда сделана запись")
+    record_from: str = Field("", description="Откуда сделана запись")  # Добавляем значение по умолчанию
     is_mobile: int = Field(..., description="Сделано с мобильного")
     services: List[AltegioService] = Field(..., description="Список услуг")
     staff: AltegioStaff = Field(..., description="Данные сотрудника")
-    goods_transactions: List[Any] = Field(..., description="Транзакции товаров")
+    goods_transactions: List[Any] = Field(default_factory=list, description="Транзакции товаров")  # Значение по умолчанию
     sms_remain_hours: int = Field(..., description="Оставшиеся часы для SMS")
     email_remain_hours: int = Field(..., description="Оставшиеся часы для Email")
     comer: Optional[Any] = Field(None, description="Пришедший")
@@ -127,13 +127,13 @@ class AltegioRecordData(BaseModel):
     datetime: str = Field(..., description="Дата и время записи с часовым поясом")
     create_date: str = Field(..., description="Дата создания записи с часовым поясом")
     last_change_date: str = Field(..., description="Дата последнего изменения записи с часовым поясом")
-    custom_fields: List[Any] = Field(..., description="Пользовательские поля")
-    custom_color: str = Field(..., description="Пользовательский цвет")
-    custom_font_color: str = Field(..., description="Пользовательский цвет шрифта")
-    record_labels: List[Any] = Field(..., description="Метки записи")
-    documents: List[AltegioDocument] = Field(..., description="Документы")
+    custom_fields: List[Any] = Field(default_factory=list, description="Пользовательские поля")  # Значение по умолчанию
+    custom_color: str = Field("", description="Пользовательский цвет")  # Добавляем значение по умолчанию
+    custom_font_color: str = Field("", description="Пользовательский цвет шрифта")  # Добавляем значение по умолчанию
+    record_labels: List[Any] = Field(default_factory=list, description="Метки записи")  # Значение по умолчанию
+    documents: List[AltegioDocument] = Field(default_factory=list, description="Документы")  # Значение по умолчанию
     short_link: str = Field(..., description="Короткая ссылка")
-    composite: List[Any] = Field(..., description="Композит")
+    composite: List[Any] = Field(default_factory=list, description="Композит")  # Значение по умолчанию
 
 
 class AltegioWebhookPayload(BaseModel):
