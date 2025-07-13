@@ -1,0 +1,59 @@
+[{
+    "company_id": 123456,
+    "resource": "record",
+    "resource_id": 987654321,
+    "status": "visit_confirmed",
+    "data": {
+        "id": 987654321,
+        "datetime": "2024-01-15 12:30:00+06:00",
+        "client": {
+            "id": 555777,
+            "name": "Тестовый Клиент",
+            "surname": "Клиентов",
+            "patronymic": "Клиентович",
+            "display_name": "Тестовый Клиент",
+            "comment": "Тестовый клиент",
+            "phone": "77771234567",
+            "card": "",
+            "email": "test@example.com",
+            "success_visits_count": 5,
+            "fail_visits_count": 0,
+            "discount": 0,
+            "custom_fields": [],
+            "sex": 1,
+            "birthday": "1990-01-01",
+            "client_tags": []
+        },
+        "services": [
+            {
+                "id": 111222,
+                "title": "Стрижка",
+                "cost": 5000,
+                "cost_to_pay": 5000,
+                "manual_cost": 5000,
+                "cost_per_unit": 5000,
+                "discount": 0,
+                "first_cost": 5000,
+                "amount": 1
+            },
+            {
+                "id": 333444,
+                "title": "Укладка",
+                "cost": 3000,
+                "cost_to_pay": 2500,
+                "manual_cost": 3000,
+                "cost_per_unit": 3000,
+                "discount": 500,
+                "first_cost": 3000,
+                "amount": 1
+            }
+        ],
+        "comment": "Тестовая запись для проверки автообновления ключа",
+        "documents": [
+            {
+                "id": 777888999,
+                "type": "receipt"
+            }
+        ]
+    }
+}]

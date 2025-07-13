@@ -4,6 +4,7 @@
 import logging
 import json
 import os
+import re
 from datetime import datetime
 from typing import Dict, Any, Optional, Union, List
 import uuid
@@ -19,6 +20,48 @@ from app.schemas.altegio import AltegioWebhookPayload, WebhookResponse
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def decode_unicode_escapes(text: str) -> str:
+    """
+    Декодирует Unicode escape-последовательности в читаемый текст
+    Например: "\\u0421\\u0440\\u043e\\u043a" -> "Срок"
+    """
+    try:
+        # Заменяем двойные обратные слэши на одинарные
+        text = text.replace('\\\\u', '\\u')
+        
+        # Декодируем unicode escape последовательности
+        def decode_match(match):
+            try:
+                unicode_char = match.group(0)
+                return unicode_char.encode().decode('unicode_escape')
+            except:
+                return match.group(0)
+        
+        # Ищем паттерны \uXXXX и декодируем их
+        result = re.sub(r'\\u[0-9a-fA-F]{4}', decode_match, text)
+        return result
+    except Exception as e:
+        logger.warning(f"Failed to decode unicode escapes in: {text[:100]}..., error: {e}")
+        return text
+
+
+def format_api_response(response_data: dict) -> str:
+    """
+    Форматирует ответ от API для логов с декодированием Unicode
+    """
+    try:
+        # Преобразуем в JSON строку
+        response_str = json.dumps(response_data, ensure_ascii=False, indent=2)
+        
+        # Декодируем Unicode escape-последовательности
+        decoded_str = decode_unicode_escapes(response_str)
+        
+        return decoded_str
+    except Exception as e:
+        logger.warning(f"Failed to format API response: {e}")
+        return str(response_data)
 
 
 async def verify_webhook_signature(request: Request) -> bool:
@@ -90,18 +133,102 @@ async def get_altegio_document(company_id: int, document_id: int) -> Dict[str, A
     raise HTTPException(status_code=500, detail="Failed to authenticate with Altegio API")
 
 
+async def refresh_webkassa_api_key(db: AsyncSession) -> Optional[ApiKey]:
+    """
+    Обновляет API ключ Webkassa, если он устарел или отсутствует.
+    """
+    logger.info("🔄 Attempting to refresh Webkassa API key...")
+    
+    try:
+        # Запускаем скрипт обновления ключа
+        import subprocess
+        import sys
+        
+        logger.info("📞 Calling update script...")
+        result = subprocess.run([
+            sys.executable, "/app/scripts/update_webkassa_key.py"
+        ], capture_output=True, text=True, cwd="/app")
+        
+        if result.returncode == 0:
+            logger.info("✅ API key update script completed successfully")
+            logger.info(f"📝 Script output: {result.stdout[-200:]}")  # Последние 200 символов
+            
+            # Получаем обновленный ключ из БД
+            await db.commit()  # Обновляем сессию
+            return await get_webkassa_api_key(db)
+        else:
+            logger.error(f"❌ API key update script failed with code {result.returncode}")
+            logger.error(f"❌ Script error: {result.stderr}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"❌ Error refreshing API key: {e}")
+        return None
+
+
 async def get_webkassa_api_key(db: AsyncSession) -> Optional[ApiKey]:
     """
-    Получает API ключ Webkassa из базы данных.
+    Получает API ключ Webkassa из базы данных с подробным логированием.
     """
-    result = await db.execute(select(ApiKey).filter(ApiKey.service_name == "Webkassa"))
-    return result.scalars().first()
+    logger.info("🔍 Searching for Webkassa API key in database...")
+    
+    try:
+        result = await db.execute(select(ApiKey).filter(ApiKey.service_name == "Webkassa"))
+        api_key_obj = result.scalars().first()
+        
+        if api_key_obj:
+            logger.info(f"✅ Found Webkassa API key in database:")
+            logger.info(f"   🔑 Key ID: {api_key_obj.id}")
+            logger.info(f"   🏷️ Service: {api_key_obj.service_name}")
+            logger.info(f"   👤 User ID (token): {api_key_obj.user_id}")
+            logger.info(f"   🗓️ Created: {api_key_obj.created_at}")
+            logger.info(f"   🗓️ Updated: {api_key_obj.updated_at}")
+            logger.info(f"   🔐 API Key (first 20 chars): {api_key_obj.api_key[:20]}...")
+            logger.info(f"   🔐 API Key (last 20 chars): ...{api_key_obj.api_key[-20:]}")
+            
+            # Проверяем возраст ключа
+            from datetime import datetime, timezone
+            if api_key_obj.updated_at:
+                age = datetime.now(timezone.utc) - api_key_obj.updated_at.replace(tzinfo=timezone.utc)
+                logger.info(f"   ⏰ Key age: {age.total_seconds() / 3600:.1f} hours")
+                
+                if age.total_seconds() > 21600:  # 6 часов
+                    logger.warning(f"⚠️ API key is older than 6 hours, might be expired!")
+            
+            return api_key_obj
+        else:
+            logger.error("❌ No Webkassa API key found in database!")
+            
+            # Проверяем все ключи в БД для отладки
+            all_keys_result = await db.execute(select(ApiKey))
+            all_keys = all_keys_result.scalars().all()
+            
+            if all_keys:
+                logger.info(f"📋 Found {len(all_keys)} total API keys in database:")
+                for key in all_keys:
+                    logger.info(f"   - Service: {key.service_name}, ID: {key.id}")
+            else:
+                logger.error("❌ Database has no API keys at all!")
+            
+            return None
+            
+    except Exception as e:
+        logger.error(f"❌ Error fetching Webkassa API key from database: {e}")
+        return None
 
 
-def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document: Dict[str, Any], webkassa_token: str) -> Dict[str, Any]:
+async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document: Dict[str, Any], db: AsyncSession, webkassa_token: str = None) -> Dict[str, Any]:
     """
     Преобразует данные из Altegio webhook и документа в формат, ожидаемый Webkassa.
     """
+    # Получаем токен из базы данных, если не передан
+    if not webkassa_token:
+        api_key_record = await get_webkassa_api_key(db)
+        if not api_key_record:
+            raise ValueError("Webkassa API key not found in database")
+        webkassa_token = api_key_record.user_id
+        logger.info(f"🔑 Using webkassa token from database: {webkassa_token}")
+    
     logger.info(f"🔄 Starting data transformation for Webkassa")
     logger.info(f"📥 Input webhook data: client_phone={payload.data.client.phone}, resource_id={payload.resource_id}")
     logger.info(f"📥 Input services count: {len(payload.data.services)}")
@@ -191,6 +318,64 @@ def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document: Dict
     return webkassa_data
 
 
+async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: dict) -> dict:
+    """
+    Отправляет данные в Webkassa API с автоматическим обновлением ключа при ошибке авторизации.
+    """
+    # Получаем API ключ
+    api_key_record = await get_webkassa_api_key(db)
+    if not api_key_record:
+        logger.error("❌ No Webkassa API key found in database")
+        # Пытаемся обновить ключ
+        logger.info("🔄 Attempting to get fresh API key...")
+        refreshed_key = await refresh_webkassa_api_key(db)
+        if refreshed_key:
+            api_key_record = refreshed_key
+            logger.info("✅ Successfully obtained fresh API key")
+        else:
+            logger.error("❌ Failed to obtain API key")
+            return {"success": False, "error": "No API key found and unable to refresh"}
+    
+    api_key = api_key_record.api_key
+    logger.info(f"🔑 Using API key from database (ID: {api_key_record.id})")
+    logger.info(f"🔑 Key first 20 chars: {api_key[:20]}...")
+    logger.info(f"🔑 Key last 20 chars: ...{api_key[-20:]}")
+    
+    # Первая попытка отправки
+    result = await send_to_webkassa(webkassa_data, api_key)
+    
+    # Проверяем, нет ли ошибки авторизации
+    if not result["success"] and "errors" in result:
+        # Ищем ошибку истечения сессии (код 2)
+        auth_error_found = False
+        for error_msg in result["errors"]:
+            if "Срок действия сессии истек" in error_msg or "Code 2:" in error_msg:
+                auth_error_found = True
+                break
+        
+        if auth_error_found:
+            logger.warning("⚠️ Session expired error detected - attempting to refresh API key...")
+            
+            # Пытаемся обновить ключ
+            refreshed_key = await refresh_webkassa_api_key(db)
+            
+            if refreshed_key and refreshed_key.api_key != api_key:
+                logger.info("✅ Successfully refreshed API key, retrying request...")
+                
+                # Повторяем запрос с новым ключом
+                retry_result = await send_to_webkassa(webkassa_data, refreshed_key.api_key)
+                if retry_result["success"]:
+                    logger.info("✅ Request succeeded after key refresh")
+                else:
+                    logger.error("❌ Request failed even after key refresh")
+                return retry_result
+            else:
+                logger.error("❌ Failed to refresh API key")
+                return result
+    
+    return result
+
+
 async def send_to_webkassa(data: dict, api_key: str) -> dict:
     """
     Отправляет подготовленные данные в API Webkassa.
@@ -206,7 +391,7 @@ async def send_to_webkassa(data: dict, api_key: str) -> dict:
     
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"  # Используем Bearer токен
+        "Authorization": f"{api_key}"  # Используем Bearer токен
     }
 
     logger.info(f"🌐 Sending to Webkassa API: {endpoint_url}")
@@ -215,14 +400,36 @@ async def send_to_webkassa(data: dict, api_key: str) -> dict:
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(endpoint_url, json=data, headers=headers, timeout=30)
+            response_data = response.json()
+            
+            # Логируем ответ с декодированием Unicode
+            formatted_response = format_api_response(response_data)
+            logger.info(f"📤 Webkassa API response received:")
+            logger.info(f"🎯 Response: {formatted_response}")
+            
+            # Если есть ошибки в ответе, извлекаем и декодируем их
+            if "Errors" in response_data and response_data["Errors"]:
+                error_messages = []
+                for error in response_data["Errors"]:
+                    error_text = error.get("Text", "")
+                    decoded_error = decode_unicode_escapes(error_text)
+                    error_code = error.get("Code", "")
+                    error_messages.append(f"Code {error_code}: {decoded_error}")
+                
+                logger.error(f"❌ Webkassa API errors: {'; '.join(error_messages)}")
+                return {"success": False, "errors": error_messages, "raw_response": response_data}
+            
             response.raise_for_status()
-            return response.json()
+            return {"success": True, "data": response_data}
+            
     except httpx.RequestError as e:
         logger.error(f"Webkassa API request failed: {e}")
         return {"success": False, "error": f"Network error: {e}"}
     except httpx.HTTPStatusError as e:
-        logger.error(f"Webkassa API returned error status {e.response.status_code}: {e.response.text}")
-        return {"success": False, "error": f"API error: {e.response.text}"}
+        error_text = e.response.text
+        decoded_error = decode_unicode_escapes(error_text)
+        logger.error(f"Webkassa API returned error status {e.response.status_code}: {decoded_error}")
+        return {"success": False, "error": f"API error: {decoded_error}"}
     except Exception as e:
         logger.error(f"Unexpected error during Webkassa API call: {e}")
         return {"success": False, "error": f"Unexpected error: {e}"}
@@ -239,9 +446,22 @@ async def handle_altegio_webhook(
     Поддерживает как одиночные объекты, так и массивы webhook
     """
     try:
-        # Логируем сырые данные для отладки
+        # Логируем основную информацию о webhook для отладки (без полных данных)
         body = await request.body()
-        logger.info(f"🔍 Raw webhook data received: {body.decode('utf-8')}")
+        body_size = len(body)
+        
+        # Логируем только размер и основную информацию, а не полные данные
+        logger.info(f"🔍 Webhook data received: {body_size} bytes")
+        
+        # Логируем structured информацию о payload
+        if isinstance(payload, list):
+            logger.info(f"📦 Received webhook array with {len(payload)} items")
+            for i, item in enumerate(payload[:3]):  # Показываем только первые 3 элемента
+                logger.info(f"   📋 Item {i+1}: resource_id={item.resource_id}, company_id={item.company_id}, status={item.status}")
+            if len(payload) > 3:
+                logger.info(f"   ... и еще {len(payload) - 3} элементов")
+        else:
+            logger.info(f"📦 Received single webhook: resource_id={payload.resource_id}, company_id={payload.company_id}, status={payload.status}")
         
         # Нормализуем payload к массиву для единообразной обработки
         if isinstance(payload, list):
@@ -366,29 +586,20 @@ async def handle_altegio_webhook(
                     # Продолжаем обработку без документа Altegio
                     altegio_document = {"data": []}
 
-                webkassa_api_key_obj = await get_webkassa_api_key(db)
-                if not webkassa_api_key_obj:
-                    logger.error("Webkassa API key not found in database.")
-                    webhook_record.processing_error = "Webkassa API key not found"
-                    webhook_record.processed = False
-                    await db.commit()
-                    continue  # Пропускаем этот webhook
-
-                webkassa_api_key = webkassa_api_key_obj.api_key
-                webkassa_token = webkassa_api_key_obj.user_id
-
-                fiscalization_data = prepare_webkassa_data(single_payload, altegio_document, webkassa_token)
+                fiscalization_data = await prepare_webkassa_data(single_payload, altegio_document, db)
                 logger.info(f"💰 Prepared Webkassa fiscalization data:")
                 logger.info(f"📋 Positions: {json.dumps(fiscalization_data.get('Positions', []), indent=2, ensure_ascii=False)}")
                 logger.info(f"💳 Payments: {json.dumps(fiscalization_data.get('Payments', []), indent=2, ensure_ascii=False)}")
                 logger.info(f"🧾 Full Webkassa request: {json.dumps(fiscalization_data, indent=2, ensure_ascii=False)}")
 
-                webkassa_response = await send_to_webkassa(fiscalization_data, webkassa_api_key)
-                logger.info(f"📤 Webkassa API response received:")
-                logger.info(f"🎯 Response: {json.dumps(webkassa_response, indent=2, ensure_ascii=False)}")
+                webkassa_response = await send_to_webkassa_with_auto_refresh(db, fiscalization_data)
                 
                 is_success = webkassa_response.get("success", False)
-                logger.info(f"{'✅ SUCCESS' if is_success else '❌ FAILED'}: Webkassa fiscalization {'completed' if is_success else 'failed'}")
+                if is_success:
+                    logger.info(f"✅ SUCCESS: Webkassa fiscalization completed")
+                else:
+                    logger.info(f"❌ FAILED: Webkassa fiscalization failed")
+                    # Ошибки уже залогированы в send_to_webkassa с декодированием
 
                 webhook_record.processed = True
                 webhook_record.processed_at = datetime.utcnow()

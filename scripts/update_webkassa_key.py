@@ -82,6 +82,7 @@ class WebkassaKeyUpdater:
                 
                 result = response.json()
                 logger.info("Successfully received new token from Webkassa")
+                logger.info(f"📋 Full API response: {result}")
                 return result
                 
         except httpx.RequestError as e:
@@ -108,13 +109,28 @@ class WebkassaKeyUpdater:
                 
                 if api_key_record:
                     # Обновляем существующую запись
+                    old_key = api_key_record.api_key[:20] + "..." if api_key_record.api_key else "None"
+                    logger.info(f"📝 Found existing API key record (old key: {old_key})")
+                    
                     api_key_record.api_key = new_token
                     if user_id:
                         api_key_record.user_id = user_id
                     api_key_record.updated_at = datetime.utcnow()
+                    
+                    new_key = new_token[:20] + "..." if new_token else "None"
+                    logger.info(f"✏️ Updated API key: {old_key} -> {new_key}")
+                    logger.info(f"📅 Updated timestamp: {api_key_record.updated_at}")
+                    if user_id:
+                        logger.info(f"👤 Updated user_id: {user_id}")
                     logger.info("Updated existing Webkassa API key in database")
                 else:
                     # Создаем новую запись
+                    new_key = new_token[:20] + "..." if new_token else "None"
+                    logger.info(f"📝 Creating new API key record")
+                    logger.info(f"🔑 New API key: {new_key}")
+                    if user_id:
+                        logger.info(f"👤 User ID: {user_id}")
+                    
                     api_key_record = ApiKey(
                         service_name="Webkassa",
                         api_key=new_token,
@@ -125,6 +141,16 @@ class WebkassaKeyUpdater:
                 
                 await db.commit()
                 logger.info("Successfully committed API key changes to database")
+                
+                # Проверяем что записалось в базу
+                await db.refresh(api_key_record)
+                saved_key = api_key_record.api_key[:20] + "..." if api_key_record.api_key else "None"
+                logger.info(f"✅ Verified in database - API key: {saved_key}")
+                logger.info(f"✅ Verified in database - Service: {api_key_record.service_name}")
+                logger.info(f"✅ Verified in database - Updated at: {api_key_record.updated_at}")
+                if api_key_record.user_id:
+                    logger.info(f"✅ Verified in database - User ID: {api_key_record.user_id}")
+                
                 return True
                 
         except Exception as e:
@@ -158,12 +184,15 @@ class WebkassaKeyUpdater:
                 
                 if response.status_code == 200:
                     logger.info("New token validation successful")
+                    logger.info(f"✅ Token validation response: {response.status_code}")
                     return True
                 elif response.status_code == 401:
                     logger.error("New token validation failed: Unauthorized")
+                    logger.error(f"❌ Token validation response: {response.status_code}")
                     return False
                 else:
                     logger.warning(f"Token validation returned status {response.status_code}, assuming valid")
+                    logger.info(f"⚠️ Token validation response: {response.status_code}")
                     return True  # Считаем валидным для других статусов
                     
         except Exception as e:
@@ -178,11 +207,13 @@ class WebkassaKeyUpdater:
         
         try:
             # Получаем новый токен
+            logger.info("🔄 Step 1: Requesting new token from Webkassa API...")
             token_data = await self.get_new_webkassa_token()
             if not token_data:
                 logger.error("Failed to get new token from Webkassa")
                 return False
             
+            logger.info("🔍 Step 2: Parsing token data...")
             # Извлекаем токен из ответа
             # Webkassa возвращает: {"Data":{"Token":"..."}}
             new_token = None
@@ -190,12 +221,16 @@ class WebkassaKeyUpdater:
             
             if "Data" in token_data and "Token" in token_data["Data"]:
                 new_token = token_data["Data"]["Token"]
+                logger.info("📋 Found token in Data.Token field")
             elif "token" in token_data:
                 new_token = token_data["token"]
+                logger.info("📋 Found token in token field")
             elif "access_token" in token_data:
                 new_token = token_data["access_token"]
+                logger.info("📋 Found token in access_token field")
             elif "api_key" in token_data:
                 new_token = token_data["api_key"]
+                logger.info("📋 Found token in api_key field")
             else:
                 logger.error(f"Unable to extract token from response: {token_data}")
                 return False
@@ -203,21 +238,28 @@ class WebkassaKeyUpdater:
             # Извлекаем user_id если есть (для Webkassa обычно не нужен)
             if "Data" in token_data and "UserId" in token_data["Data"]:
                 user_id = str(token_data["Data"]["UserId"])
+                logger.info("📋 Found user_id in Data.UserId field")
             elif "user_id" in token_data:
                 user_id = str(token_data["user_id"])
+                logger.info("📋 Found user_id in user_id field")
             elif "id" in token_data:
                 user_id = str(token_data["id"])
+                logger.info("📋 Found user_id in id field")
             
-            logger.info(f"Extracted token: {new_token[:20]}... (truncated)")
+            logger.info(f"🔑 Extracted token: {new_token[:20]}...{new_token[-10:] if len(new_token) > 30 else new_token[20:]}")
             if user_id:
-                logger.info(f"Extracted user_id: {user_id}")
+                logger.info(f"👤 Extracted user_id: {user_id}")
+            else:
+                logger.info("👤 No user_id found in response (this is normal for Webkassa)")
             
             # Проверяем валидность токена
+            logger.info("🔍 Step 3: Validating new token...")
             if not await self.validate_new_token(new_token):
                 logger.error("New token validation failed")
                 return False
             
             # Обновляем токен в базе данных
+            logger.info("💾 Step 4: Saving token to database...")
             if await self.update_api_key_in_db(new_token, user_id):
                 logger.info("✅ Webkassa API key update completed successfully")
                 return True

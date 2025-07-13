@@ -16,10 +16,10 @@ def test_webhook_endpoint():
         {
             "company_id": 307626,
             "resource": "record",
-            "resource_id": 999999,
+            "resource_id": 888888,  # Новый ID для тестирования
             "status": "update",
             "data": {
-                "id": 999999,
+                "id": 888888,  # Соответствует resource_id
                 "company_id": 307626,
                 "staff_id": 2835418,
                 "clients_count": 1,
@@ -121,7 +121,7 @@ def test_webhook_endpoint():
                         "date_created": "2025-07-14T09:30:00",
                         "category_id": 0,
                         "visit_id": 508928359,
-                        "record_id": 999999,
+                        "record_id": 888888,
                         "type_title": "Visit",
                         "is_sale_bill_printed": False
                     }

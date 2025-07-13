@@ -3,10 +3,18 @@
 
 FROM python:3.11-slim
 
+# Установка переменных окружения для корректной работы с UTF-8
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+ENV PYTHONIOENCODING=utf-8
+
 # Установка системных зависимостей
 RUN apt-get update && apt-get install -y \
     gcc \
     libpq-dev \
+    locales \
+    && echo "en_US.UTF-8 UTF-8" > /etc/locale.gen \
+    && locale-gen \
     && rm -rf /var/lib/apt/lists/*
 
 # Создание пользователя для приложения

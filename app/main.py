@@ -18,31 +18,61 @@ from app.routes.acquire import router as acquire_router
 
 # Настройка логирования
 def setup_logging():
-    """Настройка логирования в файл и консоль"""
+    """Настройка логирования в файл и консоль с корректной обработкой Unicode"""
     log_level = os.getenv("LOG_LEVEL", "INFO")
     log_file = os.getenv("LOG_FILE", "logs/errors.log")
     
     # Создаем директорию для логов если её нет
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     
-    # Настройка форматирования
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    # Пользовательский форматтер для правильной обработки Unicode
+    class UnicodeFormatter(logging.Formatter):
+        def format(self, record):
+            # Форматируем запись
+            formatted = super().format(record)
+            # Убеждаемся что это строка в правильной кодировке
+            if isinstance(formatted, bytes):
+                formatted = formatted.decode('utf-8', errors='replace')
+            return formatted
+    
+    # Настройка форматирования с правильной кодировкой
+    formatter = UnicodeFormatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
     )
     
-    # Логирование в файл
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    file_handler.setFormatter(formatter)
+    # Удаляем старые handlers если есть
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
     
-    # Логирование в консоль
-    console_handler = logging.StreamHandler()
+    # Логирование в файл с правильной кодировкой
+    file_handler = logging.FileHandler(
+        log_file, 
+        encoding='utf-8', 
+        mode='a'  # append mode
+    )
+    file_handler.setFormatter(formatter)
+    file_handler.setLevel(getattr(logging, log_level.upper()))
+    
+    # Логирование в консоль с правильной кодировкой
+    import sys
+    console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
+    console_handler.setLevel(getattr(logging, log_level.upper()))
     
     # Настройка root logger
-    root_logger = logging.getLogger()
     root_logger.setLevel(getattr(logging, log_level.upper()))
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
+    
+    # Отключаем слишком подробные логи от сторонних библиотек
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    
+    # Тестовое сообщение для проверки кодировки
+    root_logger.info("🚀 Логирование настроено. Тест Unicode: фч тест кириллицы")
     
     return root_logger
 
