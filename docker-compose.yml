@@ -41,9 +41,11 @@ services:
       - LOG_LEVEL=${LOG_LEVEL}
       - SECRET_KEY=${SECRET_KEY}
       - ALTEGIO_WEBHOOK_SECRET=${ALTEGIO_WEBHOOK_SECRET}
+      - ALTEGIO_API_URL=${ALTEGIO_API_URL}
+      - ALTEGIO_AUTH_TOKEN=${ALTEGIO_AUTH_TOKEN}
+      - ALTEGIO_USER_ID=${ALTEGIO_USER_ID}
       - WEBKASSA_API_URL=${WEBKASSA_API_URL}
-      - WEBKASSA_API_TOKEN=${WEBKASSA_API_TOKEN}
-      - WEBKASSA_SHOP_ID=${WEBKASSA_SHOP_ID}
+      - WEBKASSA_CASHBOX_ID=${WEBKASSA_CASHBOX_ID}
     volumes:
       - ./logs:/app/logs
       - ./app:/app/app:ro
@@ -92,4 +94,6 @@ volumes:
 networks:
   app-network:
     driver: bridge
+
+
 

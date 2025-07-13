@@ -55,7 +55,7 @@ class WebhookRecord(Base):
     
     def __repr__(self):
         return (f"<WebhookRecord(id={self.id}, company_id={self.company_id}, "
-                f"resource_id={self.resource_id}, client_phone='{self.client_phone}', "
+                f"resource_id={self.resource_id}, client_phone=\'{self.client_phone}\', "
                 f"processed={self.processed})>")
     
     @property
@@ -118,7 +118,7 @@ class PaymentRecord(Base):
     
     def __repr__(self):
         return (f"<PaymentRecord(id={self.id}, amount={self.amount}, "
-                f"status='{self.status}', client_phone='{self.client_phone}')>")
+                f"status=\'{self.status}\', client_phone=\'{self.client_phone}\')>")
 
 
 class FiscalizationLog(Base):
@@ -149,5 +149,23 @@ class FiscalizationLog(Base):
     
     def __repr__(self):
         return (f"<FiscalizationLog(id={self.id}, webhook_record_id={self.webhook_record_id}, "
-                f"status='{self.status}', retry_count={self.retry_count})>")
+                f"status=\'{self.status}\', retry_count={self.retry_count})>")
+
+
+class ApiKey(Base):
+    """
+    Модель для хранения API ключей сторонних сервисов (например, Webkassa)
+    """
+    __tablename__ = "api_keys"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    service_name = Column(String(50), unique=True, nullable=False, comment="Название сервиса (например, Webkassa)")
+    api_key = Column(String(255), nullable=False, comment="API ключ")
+    user_id = Column(String(255), nullable=True, comment="User ID для авторизации (если требуется)")
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+    def __repr__(self):
+        return f"<ApiKey(service_name=\'{self.service_name}\')>"
+
 
