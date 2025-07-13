@@ -253,9 +253,9 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
         service_total = (service.cost * service.amount - service.discount) / 100
         position = {
             "Count": service.amount,
-            "Price": service.cost / 100,  # Конвертация из копеек в тенге
+            "Price": service.cost ,#/ 100,  # Конвертация из копеек в тенге
             "PositionName": service.title,
-            "Discount": service.discount / 100,  # Скидка в тенге
+            "Discount": service.discount * service.cost / 100,  # Скидка в тенге
             "Tax": "0",
             "TaxType": "0", 
             "TaxPercent": "0"
@@ -303,7 +303,7 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
 
     webkassa_data = {
         "CashboxUniqueNumber": os.getenv("WEBKASSA_CASHBOX_ID"),
-        "OperationType": 3,  # Продажа
+        "OperationType": 2,  # Продажа
         "Positions": positions,
         "TicketModifiers": [],
         "Payments": payments,
