@@ -236,8 +236,9 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
     
     # Извлечение данных из Altegio webhook
     client_phone = payload.data.client.phone
-    resource_id = payload.resource_id
+    # resource_id = payload.resource_id
     services = payload.data.services
+    goods = payload.data.goods_transactions
 
     # Извлечение данных из Altegio document
     # Предполагаем, что altegio_document['data'] содержит список транзакций
@@ -245,15 +246,17 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
 
     positions = []
     payments = []
-    total_sum_for_webkassa = 0
 
     logger.info(f"🛍️ Processing {len(services)} services from webhook:")
+
+    total_sum_for_webkassa = 0
+
     # Обработка позиций (услуг) из webhook
     for i, service in enumerate(services):
-        service_total = (service.cost * service.amount - service.discount) / 100
+        service_total = service.cost_per_unit * service.amount * (1 - service.discount / 100)  # Сумма с учетом скидки в процентах
         position = {
             "Count": service.amount,
-            "Price": service.cost ,#/ 100,  # Конвертация из копеек в тенге
+            "Price": service.cost_per_unit ,#/ 100,  # Конвертация из копеек в тенге
             "PositionName": service.title,
             "Discount": service.discount * service.cost / 100,  # Скидка в тенге
             "Tax": "0",
@@ -264,9 +267,30 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
         total_sum_for_webkassa += service_total
         
         logger.info(f"  📦 Service {i+1}: {service.title}")
-        logger.info(f"     💵 Cost: {service.cost/100} тенге x {service.amount} = {(service.cost * service.amount)/100} тенге")
-        logger.info(f"     🎫 Discount: {service.discount/100} тенге")
+        logger.info(f"     💵 Cost: {service.cost_per_unit} тенге x {service.amount} = {(service.cost_per_unit * service.amount)} тенге")
+        logger.info(f"     🎫 Discount: {service.discount}% = {service.discount * service.cost / 100} тенге")
         logger.info(f"     💰 Total: {service_total} тенге")
+
+    for i, good in enumerate(goods):
+        good_total = good.cost_per_unit * abs(good.amount) * (1 - good.discount / 100)  # Сумма с учетом скидки в процентах
+        position = {
+            "Count": abs(good.amount),
+            "Price": service.cost_per_unit ,#/ 100,  # Конвертация из копеек в тенге
+            "PositionName": good.title,
+            "Discount": good.discount * good.cost / 100,  # Скидка в тенге
+            "Tax": "0",
+            "TaxType": "0", 
+            "TaxPercent": "0"
+        }
+        positions.append(position)
+        total_sum_for_webkassa += service_total
+        
+        logger.info(f"  📦 Service {i+1}: {good.title}")
+        logger.info(f"     💵 Cost: {good.cost_per_unit} тенге x {abs(good.amount)} = {(good.cost_per_unit * abs(good.amount))} тенге")
+        logger.info(f"     🎫 Discount: {good.discount}% = {good.discount * good.cost / 100} тенге")
+        logger.info(f"     💰 Total: {good_total} тенге")
+
+
 
     logger.info(f"💳 Processing {len(transactions)} transactions from Altegio document:")
     # Обработка платежей из Altegio document
@@ -275,10 +299,12 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
     for i, transaction in enumerate(transactions):
         if transaction.get('amount', 0) > 0:
             payment_type = 1 # По умолчанию банковская карта
-            account_title = transaction.get('account', {}).get('title', '').lower()
-            if 'kaspi' in account_title or 'каспи' in account_title:
+
+            # account_title = transaction.get('account', {}).get('title', '').lower()
+            # if 'kaspi' in account_title or 'каспи' in account_title:
+            if transaction.get('account', {}).get('is_cash', True):
                 payment_type = 1 # Kaspi обычно безналичный
-            elif transaction.get('account', {}).get('is_cash', False):
+            else:
                 payment_type = 0 # Наличные
             # TODO: Добавить другие типы оплаты, если необходимо
 
@@ -306,14 +332,14 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
         "OperationType": 2,  # Продажа
         "Positions": positions,
         "TicketModifiers": [],
-        "Payments": payments,
+        "Payments": payments,   
         "Change": 0.0,
         "RoundType": 2,
-        "ExternalCheckNumber": str(uuid.uuid4()),  # Генерируем уникальный ID для идемпотентности
+        "ExternalCheckNumber": payload.data.id,#str(uuid.uuid4()),  # Генерируем уникальный ID для идемпотентности
         "CustomerPhone": client_phone
     }
 
-    logger.info(f"✅ Data transformation completed:")
+    logger.info(f"✅ Data transformation completed: check number {webkassa_data['ExternalCheckNumber']}")
     logger.info(f"   📞 Customer phone: {client_phone}")
     logger.info(f"   📦 Positions count: {len(positions)}")
     logger.info(f"   💳 Payments count: {len(payments)}")
