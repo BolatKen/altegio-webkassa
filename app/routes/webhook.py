@@ -136,6 +136,59 @@ async def get_altegio_document(company_id: int, document_id: int) -> Dict[str, A
     raise HTTPException(status_code=500, detail="Failed to authenticate with Altegio API")
 
 
+async def get_altegio_sale_document(company_id: int, document_id: int) -> Dict[str, Any]:
+    """
+    Получает документ из Altegio API.
+    """
+    altegio_api_url = os.getenv("ALTEGIO_API_URL", "https://api.alteg.io/api/v1")
+    altegio_auth_token = os.getenv("ALTEGIO_AUTH_TOKEN") # Bearer token
+    altegio_user_id = os.getenv("ALTEGIO_USER_ID") # User ID
+
+    if not altegio_auth_token or not altegio_user_id:
+        logger.error("Altegio API credentials not configured in .env")
+        raise HTTPException(status_code=500, detail="Altegio API credentials not configured")
+
+    url = f"{altegio_api_url}/company/{company_id}/sale/{document_id}"
+    
+    # Попробуем разные варианты заголовков
+    header_variants = [
+        {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {altegio_auth_token}, User {altegio_user_id}",
+            "Accept": "application/vnd.api.v2+json"
+        },
+    ]
+
+    logger.info(f"Making request to Altegio API: {url}")
+
+    for i, headers in enumerate(header_variants):
+        try:
+            logger.info(f"Attempt {i+1}: Using headers: {[key for key in headers.keys() if key != 'Authorization']}")
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, headers=headers, timeout=30)
+                response.raise_for_status()
+                logger.info(f"Success with header variant {i+1}")
+                return response.json()
+                
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Attempt {i+1} failed with status {e.response.status_code}: {e.response.text}")
+            if i == len(header_variants) - 1:  # Последняя попытка
+                logger.error(f"All header variants failed. Last error: {e.response.text}")
+                raise HTTPException(status_code=e.response.status_code, detail=f"Altegio API error: {e.response.text}")
+            continue
+        except httpx.RequestError as e:
+            logger.error(f"Altegio API request failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Altegio API request failed: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error fetching Altegio document: {e}")
+            raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
+    
+    # Этот код не должен быть достигнут, но на всякий случай
+    raise HTTPException(status_code=500, detail="Failed to authenticate with Altegio API")
+
+
+
 async def refresh_webkassa_api_key(db: AsyncSession) -> Optional[ApiKey]:
     """
     Обновляет API ключ Webkassa, если он устарел или отсутствует.
@@ -318,8 +371,21 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
     goods = payload.data.goods_transactions
 
     # Извлечение данных из Altegio document
-    # Предполагаем, что altegio_document['data'] содержит список транзакций
-    transactions = altegio_document.get('data', [])
+    # Поддерживаем два формата: обычный транзакции и goods sale document
+    transactions = []
+    
+    # Проверяем, какой формат документа получен
+    if altegio_document.get('data', {}).get('state'):
+        # Новый формат для goods_operations_sale
+        logger.info(f"📦 Processing goods sale document format")
+        sale_transactions = altegio_document.get('data', {}).get('state', {}).get('payment_transactions', [])
+        transactions = sale_transactions
+        logger.info(f"📥 Found {len(transactions)} payment transactions in goods sale document")
+    else:
+        # Старый формат для обычных транзакций
+        logger.info(f"📋 Processing standard transactions document format")
+        transactions = altegio_document.get('data', [])
+        logger.info(f"📥 Found {len(transactions)} transactions in standard document")
 
     positions = []
     payments = []
@@ -348,6 +414,7 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
         logger.info(f"     🎫 Discount: {service.discount}% = {service.discount / 100 * service.cost_per_unit} тенге")
         logger.info(f"     💰 Total: {service_total} тенге")
 
+    # Обработка товаров из webhook (goods_transactions)
     for i, good in enumerate(goods):
         good_total = good["cost_per_unit"] * abs(good["amount"]) * (1 - good["discount"] / 100)  # Сумма с учетом скидки в процентах
         position = {
@@ -367,33 +434,30 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
         logger.info(f"     🎫 Discount: {good['discount']}% = {good['discount'] / 100 * good['cost']} тенге")
         logger.info(f"     💰 Total: {good_total} тенге")
 
-
-
+    # Извлечение данных из Altegio document (стандартный формат для record)
+    transactions = altegio_document.get('data', [])
     logger.info(f"💳 Processing {len(transactions)} transactions from Altegio document:")
-    # Обработка платежей из Altegio document
-    # В данном примере, мы берем только транзакции с положительной суммой (поступления)
-    # и маппим их на типы оплаты Webkassa
+    
+    # Обработка платежей из Altegio document (стандартный формат)
     for i, transaction in enumerate(transactions):
-        if transaction.get('amount', 0) > 0:
-            payment_type = 1 # По умолчанию банковская карта
-
-            # account_title = transaction.get('account', {}).get('title', '').lower()
-            # if 'kaspi' in account_title or 'каспи' in account_title:
-            if transaction.get('account', {}).get('is_cash', True):
-                payment_type = 1 # Kaspi обычно безналичный
-            else:
-                payment_type = 0 # Наличные
-            # TODO: Добавить другие типы оплаты, если необходимо
+        amount = transaction.get('amount', 0)
+        if amount > 0:
+            account_info = transaction.get('account', {})
+            is_cash = account_info.get('is_cash', True)
+            account_title = account_info.get('title', 'Unknown')
+            
+            # Определяем тип платежа на основе is_cash
+            payment_type = 0 if is_cash else 1  # 0 = наличные, 1 = безналичный
 
             payment = {
-                "Sum": transaction["amount"],
+                "Sum": amount,
                 "PaymentType": payment_type
             }
             payments.append(payment)
             
             payment_type_name = "Наличные" if payment_type == 0 else "Безналичный"
-            logger.info(f"  💳 Payment {i+1}: {transaction['amount']} тенге ({payment_type_name})")
-            logger.info(f"     🏦 Account: {transaction.get('account', {}).get('title', 'Unknown')}")
+            logger.info(f"  💳 Payment {i+1}: {amount} тенге ({payment_type_name})")
+            logger.info(f"     🏦 Account: {account_title}")
 
     # Если платежи не были найдены в документе, используем общую сумму из webhook
     if not payments:
@@ -427,7 +491,135 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
 
 
 
+async def prepare_webkassa_data_for_goods_sale(payload: AltegioWebhookPayload, altegio_document: Dict[str, Any], db: AsyncSession, webkassa_token: str = None) -> Dict[str, Any]:
+    """
+    Преобразует данные из Altegio goods_operations_sale webhook в формат, ожидаемый Webkassa.
+    Специальная обработка для продаж товаров с их особым форматом транзакций.
+    """
+    # Получаем токен из базы данных, если не передан
+    if not webkassa_token:
+        api_key_record = await get_webkassa_api_key(db)
+        if not api_key_record:
+            logger.warning("⚠️ No Webkassa API key found, attempting to get fresh key...")
+            
+            # Пытаемся получить новый ключ
+            refreshed_key = await refresh_webkassa_api_key(db)
+            if refreshed_key:
+                api_key_record = refreshed_key
+                logger.info("✅ Successfully obtained fresh API key for goods sale data preparation")
+            else:
+                error_msg = "Webkassa API key not found in database and unable to refresh"
+                logger.error(f"❌ {error_msg}")
+                
+                # Отправляем уведомление в Telegram о критической ошибке
+                await send_telegram_notification(
+                    "КРИТИЧЕСКАЯ ОШИБКА: Невозможно получить API ключ Webкassa для обработки продажи товаров",
+                    {
+                        "Проблема": "API ключ не найден в базе данных и не удалось получить новый",
+                        "Webhook ID": str(payload.resource_id),
+                        "Company ID": str(payload.company_id),
+                        "Тип": "goods_operations_sale",
+                        "Влияние": "Обработка webhook остановлена",
+                        "Требуется": "Проверка настроек Webkassa API и перезапуск скрипта обновления ключей"
+                    }
+                )
+                
+                raise ValueError(error_msg)
+        
+        webkassa_token = api_key_record.user_id
+        logger.info(f"🔑 Using webkassa token from database: {webkassa_token}")
+    
+    logger.info(f"🛒 Starting goods sale data transformation for Webkassa")
+    client_phone = payload.data.client.phone if payload.data.client else ""
+    logger.info(f"📥 Input goods sale webhook data: client_phone={client_phone}, resource_id={payload.resource_id}")
+    
+    positions = []
+    payments = []
+    total_sum_for_webkassa = 0
 
+    # Обработка товаров из goods sale document
+    if altegio_document.get('data', {}).get('state', {}).get('items'):
+        sale_items = altegio_document.get('data', {}).get('state', {}).get('items', [])
+        logger.info(f"🛒 Processing {len(sale_items)} items from goods sale document:")
+        
+        for i, item in enumerate(sale_items):
+            # Извлекаем данные из формата goods sale
+            item_count = item.get('amount', 1)
+            item_price = item.get('default_cost_per_unit', 0)
+            item_discount_percent = item.get('client_discount_percent', 0)
+            item_total = item.get('cost_to_pay_total', 0)
+            
+            position = {
+                "Count": item_count,
+                "Price": item_price,
+                "PositionName": item.get('title', 'Unknown Item'),
+                "Discount": (item_price * item_count) - item_total,  # Рассчитываем скидку
+                "Tax": "0",
+                "TaxType": "0", 
+                "TaxPercent": "0"
+            }
+            positions.append(position)
+            total_sum_for_webkassa += item_total
+            
+            logger.info(f"  🛒 Sale Item {i+1}: {item.get('title', 'Unknown')}")
+            logger.info(f"     💵 Price: {item_price} тенге x {item_count} = {item_price * item_count} тенге")
+            logger.info(f"     🎫 Discount: {item_discount_percent}% = {(item_price * item_count) - item_total} тенге")
+            logger.info(f"     💰 Total to pay: {item_total} тенге")
+
+    # Обработка платежей из goods sale document
+    if altegio_document.get('data', {}).get('state', {}).get('payment_transactions'):
+        sale_transactions = altegio_document.get('data', {}).get('state', {}).get('payment_transactions', [])
+        logger.info(f"💳 Processing {len(sale_transactions)} payment transactions from goods sale document:")
+        
+        for i, transaction in enumerate(sale_transactions):
+            amount = transaction.get('amount', 0)
+            if amount > 0:
+                account_info = transaction.get('account', {})
+                is_cash = account_info.get('is_cash', True)
+                account_title = account_info.get('title', 'Unknown')
+                
+                # Определяем тип платежа на основе is_cash
+                payment_type = 0 if is_cash else 1  # 0 = наличные, 1 = безналичный
+
+                payment = {
+                    "Sum": amount,
+                    "PaymentType": payment_type
+                }
+                payments.append(payment)
+                
+                payment_type_name = "Наличные" if payment_type == 0 else "Безналичный"
+                logger.info(f"  💳 Payment {i+1}: {amount} тенге ({payment_type_name})")
+                logger.info(f"     🏦 Account: {account_title}")
+
+    # Если платежи не были найдены в документе, используем общую сумму
+    if not payments:
+        default_payment = {
+            "Sum": total_sum_for_webkassa,
+            "PaymentType": 1  # По умолчанию безналичный
+        }
+        payments.append(default_payment)
+        logger.warning(f"⚠️ No payments found in goods sale document, using default payment: {total_sum_for_webkassa} тенге (Безналичный)")
+
+    webkassa_data = {
+        "CashboxUniqueNumber": os.getenv("WEBKASSA_CASHBOX_ID"),
+        "OperationType": 2,  # Продажа
+        "Positions": positions,
+        "TicketModifiers": [],
+        "Payments": payments,   
+        "Change": 0.0,
+        "RoundType": 2,
+        "ExternalCheckNumber": payload.data.id,
+        "CustomerPhone": client_phone
+    }
+
+    logger.info(f"✅ Goods sale data transformation completed: check number {webkassa_data['ExternalCheckNumber']}")
+    logger.info(f"   📞 Customer phone: {client_phone}")
+    logger.info(f"   📦 Positions count: {len(positions)}")
+    logger.info(f"   💳 Payments count: {len(payments)}")
+    logger.info(f"   💰 Total amount: {total_sum_for_webkassa} тенге")
+    logger.info(f"   🔑 Token will be sent in Authorization header")
+    
+    return webkassa_data
 
 
 
@@ -834,18 +1026,33 @@ async def handle_altegio_webhook(
             comment_text = single_payload.data.comment or ""
             has_fch = 'фч' in comment_text.lower() if comment_text else False
             
-            conditions_met = (
-                single_payload.resource == 'record' and 
-                single_payload.data.comment and has_fch and 
-                single_payload.data.paid_full == 1
-            )
+            # Условия для обработки разных типов webhook
+            # ВСЕ типы webhook требуют комментарий с 'фч'!
+            if single_payload.resource == 'record':
+                # Обычные записи требуют комментарий с 'фч' и полную оплату
+                conditions_met = (
+                    single_payload.data.comment and has_fch and 
+                    single_payload.data.paid_full == 1
+                )
+            elif single_payload.resource == 'goods_operations_sale':
+                # Продажи товаров тоже требуют комментарий с 'фч'
+                conditions_met = (
+                    single_payload.data.comment and has_fch
+                )
+            else:
+                conditions_met = False
             
             logger.info(f"🔍 Checking processing conditions for webhook {single_payload.resource_id}:")
-            logger.info(f"   📋 Resource: {single_payload.resource} (required: 'record') {'✅' if single_payload.resource == 'record' else '❌'}")
+            logger.info(f"   📋 Resource: {single_payload.resource} (supported: 'record', 'goods_operations_sale') {'✅' if single_payload.resource in ['record', 'goods_operations_sale'] else '❌'}")
             logger.info(f"   💬 Comment: '{comment_text}' (must contain 'фч') {'✅' if has_fch else '❌'}")
             logger.info(f"   💬 Comment bytes: {comment_text.encode('utf-8') if comment_text else b''}")
             logger.info(f"   💬 Contains 'фч': {has_fch}")
-            logger.info(f"   💰 Paid full: {single_payload.data.paid_full} (required: 1) {'✅' if single_payload.data.paid_full == 1 else '❌'}")
+            
+            if single_payload.resource == 'record':
+                logger.info(f"   💰 Paid full: {single_payload.data.paid_full} (required: 1) {'✅' if single_payload.data.paid_full == 1 else '❌'}")
+            elif single_payload.resource == 'goods_operations_sale':
+                logger.info(f"   🛍️ Goods sale: requires 'фч' comment {'✅' if has_fch else '❌'}")
+            
             logger.info(f"   🎯 Overall result: {'✅ PROCESSING' if conditions_met else '❌ SKIPPING'}")
             
             if not conditions_met:
@@ -934,8 +1141,16 @@ async def handle_altegio_webhook(
                 # Попытка получить документ Altegio
                 altegio_document = None
                 try:
-                    logger.info(f"Requesting Altegio document: company_id={single_payload.company_id}, document_id={altegio_document_id}")
-                    altegio_document = await get_altegio_document(single_payload.company_id, altegio_document_id)
+                    logger.info(f"Requesting Altegio document: company_id={single_payload.company_id}, document_id={altegio_document_id}, resource={single_payload.resource}")
+                    
+                    # Выбираем правильную функцию в зависимости от типа ресурса
+                    if single_payload.resource == "goods_operations_sale":
+                        logger.info(f"🛍️ Using goods sale document API for resource_id {single_payload.resource_id}")
+                        altegio_document = await get_altegio_sale_document(single_payload.company_id, altegio_document_id)
+                    else:
+                        logger.info(f"📋 Using transactions document API for resource_id {single_payload.resource_id}")
+                        altegio_document = await get_altegio_document(single_payload.company_id, altegio_document_id)
+                    
                     logger.info(f"✅ Successfully fetched Altegio document for resource_id {single_payload.resource_id}")
                     logger.info(f"📄 Altegio document content: {json.dumps(altegio_document, indent=2, ensure_ascii=False)}")
                 except HTTPException as altegio_error:
@@ -943,11 +1158,25 @@ async def handle_altegio_webhook(
                     # Продолжаем обработку без документа Altegio
                     altegio_document = {"data": []}
 
-                fiscalization_data = await prepare_webkassa_data(single_payload, altegio_document, db)
+                # Проверяем, есть ли данные в altegio_document
+                if not altegio_document.get("data"):
+                    logger.warning(f"No data found in Altegio document for resource_id {single_payload.resource_id}, skipping fiscalization")
+                    webhook_record.processing_error = "No data found in Altegio document"
+                    webhook_record.processed = False
+                    failed_records.append(webhook_record.id)  # Добавляем в список неуспешных
+                    await db.commit()
+                    continue  # Пропускаем этот webhook
+
+                # Определяем тип ресурса и вызываем соответствующую функцию подготовки данных
+                if single_payload.resource == "goods_operations_sale":
+                    webkassa_data = await prepare_webkassa_data_for_goods_sale(single_payload, altegio_document, db)
+                else:
+                    webkassa_data = await prepare_webkassa_data(single_payload, altegio_document, db)
+                
                 logger.info(f"💰 Prepared Webkassa fiscalization data:")
-                logger.info(f"📋 Positions: {json.dumps(fiscalization_data.get('Positions', []), indent=2, ensure_ascii=False)}")
-                logger.info(f"💳 Payments: {json.dumps(fiscalization_data.get('Payments', []), indent=2, ensure_ascii=False)}")
-                logger.info(f"🧾 Full Webkassa request: {json.dumps(fiscalization_data, indent=2, ensure_ascii=False)}")
+                logger.info(f"📋 Positions: {json.dumps(webkassa_data.get('Positions', []), indent=2, ensure_ascii=False)}")
+                logger.info(f"💳 Payments: {json.dumps(webkassa_data.get('Payments', []), indent=2, ensure_ascii=False)}")
+                logger.info(f"🧾 Full Webkassa request: {json.dumps(webkassa_data, indent=2, ensure_ascii=False)}")
 
                 # Подготавливаем информацию о webhook для логирования
                 webhook_info = {
@@ -962,7 +1191,7 @@ async def handle_altegio_webhook(
                     "full_webhook": single_payload.model_dump()  # Полная информация о webhook
                 }
 
-                webkassa_response = await send_to_webkassa_with_auto_refresh(db, fiscalization_data, webhook_info)
+                webkassa_response = await send_to_webkassa_with_auto_refresh(db, webkassa_data, webhook_info)
                 
                 is_success = webkassa_response.get("success", False)
                 if is_success:
@@ -993,7 +1222,7 @@ async def handle_altegio_webhook(
 
                 # Общие поля, которые записываются в любом случае для анализа
                 webhook_record.webkassa_response = json.dumps(webkassa_response)
-                external_check_number = fiscalization_data.get("ExternalCheckNumber")
+                external_check_number = webkassa_data.get("ExternalCheckNumber")
                 webhook_record.webkassa_request_id = str(external_check_number) if external_check_number is not None else None
                 await db.commit()
                 
