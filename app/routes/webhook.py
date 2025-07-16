@@ -367,7 +367,7 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
         
         # Отправляем уведомление в Telegram
         await send_telegram_notification(
-            "Отсутствует API ключ Webkassa",
+            "Отсутствует API ключ Webкassa",
             {
                 "Ошибка": "API ключ не найден в базе данных",
                 "Действие": "Попытка получения нового ключа"
@@ -386,7 +386,7 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
             
             # Критическое уведомление в Telegram
             await send_telegram_notification(
-                "КРИТИЧЕСКАЯ ОШИБКА: Невозможно получить API ключ Webkassa",
+                "КРИТИЧЕСКАЯ ОШИБКА: Невозможно получить API ключ Webкassa",
                 {
                     "Проблема": "Не удалось получить API ключ из базы данных и обновить его",
                     "Влияние": "Фискализация чеков невозможна",
@@ -424,7 +424,7 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
             
             # Уведомление в Telegram об ошибке авторизации
             await send_telegram_notification(
-                "Ошибка авторизации Webkassa - истек срок действия токена",
+                "Ошибка авторизации Webкassa - истек срок действия токена",
                 {
                     "Тип ошибки": "Срок действия сессии истек (Code 2)",
                     "Текущий токен": f"{api_token[:20]}...{api_token[-10:]}",
@@ -453,7 +453,7 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
                     
                     # Успешное уведомление
                     await send_telegram_notification(
-                        "✅ Проблема с авторизацией Webkassa решена",
+                        "✅ Проблема с авторизацией Webкassa решена",
                         {
                             "Результат": "API ключ успешно обновлен",
                             "Новый токен": f"{refreshed_key.api_key[:20]}...{refreshed_key.api_key[-10:]}",
@@ -466,12 +466,12 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
                     
                     # Критическое уведомление о неудаче после обновления
                     await send_telegram_notification(
-                        "🚨 КРИТИЧЕСКАЯ ОШИБКА: Webkassa не работает даже после обновления токена",
+                        "🚨 КРИТИЧЕСКАЯ ОШИБКА: Webкassa не работает даже после обновления токена",
                         {
                             "Проблема": "Запрос не прошел даже с новым API ключом",
                             "Новый токен": f"{refreshed_key.api_key[:20]}...{refreshed_key.api_key[-10:]}",
                             "Ошибки": "; ".join(retry_result.get('errors', [])),
-                            "Требуется": "Немедленная проверка настроек Webkassa API"
+                            "Требуется": "Немедленная проверка настроек Webкassa API"
                         }
                     )
                 return retry_result
@@ -481,7 +481,7 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
                 
                 # Критическое уведомление о неудаче обновления
                 await send_telegram_notification(
-                    "🚨 КРИТИЧЕСКАЯ ОШИБКА: Не удалось обновить API ключ Webkassa",
+                    "🚨 КРИТИЧЕСКАЯ ОШИБКА: Не удалось обновить API ключ Webкassa",
                     {
                         "Проблема": "Скрипт обновления API ключа не сработал",
                         "Текущий токен": f"{api_token[:20]}...{api_token[-10:]}",
@@ -512,7 +512,7 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
             
             # Уведомление в Telegram об ошибке смены
             await send_telegram_notification(
-                "Ошибка смены Webkassa - требуется закрытие смены",
+                "Ошибка смены Webкassa - требуется закрытие смены",
                 {
                     "Тип ошибки": "Необходимо закрыть смену (Code 11)",
                     "Касса": os.getenv('WEBKASSA_CASHBOX_ID'),
@@ -540,7 +540,7 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
                     
                     # Успешное уведомление
                     await send_telegram_notification(
-                        "✅ Проблема со сменой Webkassa решена",
+                        "✅ Проблема со сменой Webкassa решена",
                         {
                             "Результат": "Смена успешно закрыта",
                             "Касса": os.getenv('WEBKASSA_CASHBOX_ID'),
@@ -553,7 +553,7 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
                     
                     # Критическое уведомление о неудаче после закрытия смены
                     await send_telegram_notification(
-                        "🚨 КРИТИЧЕСКАЯ ОШИБКА: Webkassa не работает даже после закрытия смены",
+                        "🚨 КРИТИЧЕСКАЯ ОШИБКА: Webкassa не работает даже после закрытия смены",
                         {
                             "Проблема": "Запрос не прошел даже после закрытия смены",
                             "Касса": os.getenv('WEBKASSA_CASHBOX_ID'),
@@ -568,19 +568,19 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
                 
                 # Критическое уведомление о неудаче закрытия смены
                 await send_telegram_notification(
-                    "🚨 КРИТИЧЕСКАЯ ОШИБКА: Не удалось закрыть смену Webkassa",
+                    "🚨 КРИТИЧЕСКАЯ ОШИБКА: Не удалось закрыть смену Webкassa",
                     {
                         "Проблема": "Автоматическое закрытие смены не сработало",
                         "Касса": os.getenv('WEBKASSA_CASHBOX_ID'),
                         "Ошибки закрытия": "; ".join(closed_shift.get('errors', [])),
-                        "Требуется": "Ручное закрытие смены через веб-интерфейс Webkassa"
+                        "Требуется": "Ручное закрытие смены через веб-интерфейс Webкassa"
                     }
                 )
                 return result
     
     # Если дошли до сюда и запрос не успешен, логируем общую ошибку
     if not result["success"]:
-        logger.error(f"🔍 General Webkassa error details:")
+        logger.error(f"🔍 General Webкassa error details:")
         logger.error(f"   📋 Success: {result.get('success')}")
         logger.error(f"   📋 Error: {result.get('error')}")
         logger.error(f"   📋 Errors: {result.get('errors', [])}")
@@ -588,7 +588,7 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
         
         # Уведомление в Telegram о неопознанной ошибке
         await send_telegram_notification(
-            "Неопознанная ошибка Webkassa API",
+            "Неопознанная ошибка Webкassa API",
             {
                 "Тип": "Общая ошибка API",
                 "Ошибка": result.get('error', 'Unknown'),
@@ -1018,6 +1018,80 @@ async def send_telegram_notification(message: str, error_details: dict = None) -
     except Exception as e:
         logger.error(f"❌ Error sending Telegram notification: {e}")
         return False
+
+
+@router.post("/webhook/test")
+async def test_webhook_endpoint(request: Request):
+    """
+    Тестовый эндпоинт для проверки получения webhook от Altegio
+    """
+    try:
+        # Получаем все заголовки
+        headers = dict(request.headers)
+        
+        # Получаем тело запроса
+        body = await request.body()
+        body_text = body.decode('utf-8') if body else ""
+        
+        # Получаем query параметры
+        query_params = dict(request.query_params)
+        
+        # Логируем всю информацию
+        logger.info("=" * 50)
+        logger.info("🧪 TEST WEBHOOK RECEIVED")
+        logger.info("=" * 50)
+        logger.info(f"📍 Method: {request.method}")
+        logger.info(f"📍 URL: {request.url}")
+        logger.info(f"📍 Client IP: {request.client.host if request.client else 'Unknown'}")
+        logger.info(f"📋 Headers:")
+        for key, value in headers.items():
+            logger.info(f"   {key}: {value}")
+        logger.info(f"🔍 Query params: {query_params}")
+        logger.info(f"📦 Body size: {len(body)} bytes")
+        logger.info(f"📦 Body content: {body_text[:1000]}{'...' if len(body_text) > 1000 else ''}")
+        logger.info("=" * 50)
+        
+        # Пытаемся распарсить JSON если возможно
+        try:
+            if body_text:
+                import json
+                parsed_json = json.loads(body_text)
+                logger.info(f"✅ JSON parsed successfully:")
+                logger.info(f"📋 JSON content: {json.dumps(parsed_json, ensure_ascii=False, indent=2)}")
+        except json.JSONDecodeError:
+            logger.info("⚠️ Body is not valid JSON")
+        
+        # Отправляем уведомление в Telegram
+        await send_telegram_notification(
+            "🧪 Тестовый webhook получен",
+            {
+                "URL": str(request.url),
+                "Method": request.method,
+                "IP": request.client.host if request.client else 'Unknown',
+                "Headers": str(headers),
+                "Body size": f"{len(body)} bytes",
+                "Body preview": body_text[:500] + "..." if len(body_text) > 500 else body_text
+            }
+        )
+        
+        return {
+            "success": True,
+            "message": "Test webhook received successfully",
+            "received_data": {
+                "method": request.method,
+                "headers": headers,
+                "query_params": query_params,
+                "body_size": len(body),
+                "body_preview": body_text[:200] + "..." if len(body_text) > 200 else body_text
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in test webhook: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 
 

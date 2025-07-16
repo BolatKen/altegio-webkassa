@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Тестирование Altegio Webhook</title>
+    <style>
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+        background-color: #f5f5f5;
+      }
+      .container {
+        background: white;
+        padding: 30px;
+        border-radius: 10px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      }
+      h1 {
+        color: #333;
+        text-align: center;
+        margin-bottom: 30px;
+      }
+      .form-group {
+        margin-bottom: 20px;
+      }
+      label {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: bold;
+        color: #555;
+      }
+      input,
+      textarea,
+      select {
+        width: 100%;
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 5px;
+        font-size: 14px;
+        box-sizing: border-box;
+      }
+      textarea {
+        height: 200px;
+        font-family: "Courier New", monospace;
+      }
+      button {
+        background-color: #007bff;
+        color: white;
+        padding: 12px 30px;
+        border: none;
+        border-radius: 5px;
+        cursor: pointer;
+        font-size: 16px;
+        margin-right: 10px;
+      }
+      button:hover {
+        background-color: #0056b3;
+      }
+      .btn-test {
+        background-color: #28a745;
+      }
+      .btn-test:hover {
+        background-color: #1e7e34;
+      }
+      .response {
+        margin-top: 20px;
+        padding: 15px;
+        border-radius: 5px;
+        white-space: pre-wrap;
+        font-family: "Courier New", monospace;
+        display: none;
+      }
+      .response.success {
+        background-color: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+      }
+      .response.error {
+        background-color: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+      }
+      .preset-buttons {
+        margin-bottom: 20px;
+      }
+      .preset-btn {
+        background-color: #6c757d;
+        margin-right: 10px;
+        margin-bottom: 10px;
+        padding: 8px 15px;
+        font-size: 14px;
+      }
+      .preset-btn:hover {
+        background-color: #545b62;
+      }
+      .status {
+        display: inline-block;
+        padding: 5px 10px;
+        border-radius: 3px;
+        font-size: 12px;
+        margin-left: 10px;
+      }
+      .status.online {
+        background-color: #d4edda;
+        color: #155724;
+      }
+      .status.offline {
+        background-color: #f8d7da;
+        color: #721c24;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>
+        🧪 Тестирование Altegio Webhook
+        <span id="status" class="status">Проверка...</span>
+      </h1>
+
+      <div class="form-group">
+        <label for="webhook-url">URL Webhook (включая протокол):</label>
+        <input
+          type="text"
+          id="webhook-url"
+          value="http://localhost:8000/webhook/test"
+          placeholder="https://your-tunnel.ngrok.io/webhook/test"
+        />
+      </div>
+
+      <div class="form-group">
+        <label for="preset-buttons">Быстрые пресеты:</label>
+        <div class="preset-buttons">
+          <button type="button" class="preset-btn" onclick="loadPreset('test')">
+            Тестовые данные
+          </button>
+          <button type="button" class="preset-btn" onclick="loadPreset('real')">
+            Реальный пример
+          </button>
+          <button
+            type="button"
+            class="preset-btn"
+            onclick="loadPreset('minimal')"
+          >
+            Минимальные данные
+          </button>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="webhook-data">JSON данные для отправки:</label>
+        <textarea
+          id="webhook-data"
+          placeholder="Введите JSON данные..."
+        ></textarea>
+      </div>
+
+      <div>
+        <button type="button" onclick="sendWebhook()" class="btn-test">
+          🚀 Отправить Тестовый Webhook
+        </button>
+        <button type="button" onclick="checkServer()">
+          🔍 Проверить Сервер
+        </button>
+        <button type="button" onclick="clearResponse()">🧹 Очистить</button>
+      </div>
+
+      <div id="response" class="response"></div>
+    </div>
+
+    <script>
+      // Проверяем статус сервера при загрузке
+      window.onload = function () {
+        checkServer();
+        loadPreset("test");
+      };
+
+      const presets = {
+        test: {
+          test: true,
+          message: "Test webhook from local testing page",
+          timestamp: new Date().toISOString(),
+        },
+        real: {
+          company_id: 12345,
+          resource: "record",
+          resource_id: 98765,
+          status: "confirmed",
+          data: {
+            id: 98765,
+            datetime: "2025-01-15 14:30:00",
+            comment: "Стрижка + фч",
+            paid_full: 1,
+            client: {
+              phone: "+77012345678",
+              name: "Тестовый Клиент",
+            },
+            services: [
+              {
+                title: "Женская стрижка",
+                cost_per_unit: 15000,
+                amount: 1,
+                cost: 15000,
+                discount: 0,
+              },
+            ],
+            goods_transactions: [],
+            documents: [
+              {
+                id: 567890,
+              },
+            ],
+          },
+        },
+        minimal: {
+          resource: "record",
+          resource_id: 123,
+          status: "confirmed",
+        },
+      };
+
+      function loadPreset(type) {
+        const data = presets[type];
+        document.getElementById("webhook-data").value = JSON.stringify(
+          data,
+          null,
+          2
+        );
+      }
+
+      async function checkServer() {
+        const url = document
+          .getElementById("webhook-url")
+          .value.replace("/webhook/test", "/health");
+        const statusEl = document.getElementById("status");
+
+        try {
+          const response = await fetch(url);
+          if (response.ok) {
+            statusEl.textContent = "Онлайн";
+            statusEl.className = "status online";
+          } else {
+            statusEl.textContent = "Ошибка";
+            statusEl.className = "status offline";
+          }
+        } catch (error) {
+          statusEl.textContent = "Офлайн";
+          statusEl.className = "status offline";
+        }
+      }
+
+      async function sendWebhook() {
+        const url = document.getElementById("webhook-url").value;
+        const data = document.getElementById("webhook-data").value;
+        const responseEl = document.getElementById("response");
+
+        if (!url) {
+          showResponse("Укажите URL webhook", true);
+          return;
+        }
+
+        let jsonData;
+        try {
+          jsonData = data ? JSON.parse(data) : {};
+        } catch (error) {
+          showResponse("Ошибка парсинга JSON: " + error.message, true);
+          return;
+        }
+
+        try {
+          showResponse("Отправка webhook...", false);
+
+          const response = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Test-Source": "local-testing-page",
+            },
+            body: data || "{}",
+          });
+
+          const responseText = await response.text();
+          let responseData;
+          try {
+            responseData = JSON.parse(responseText);
+          } catch {
+            responseData = responseText;
+          }
+
+          const result = {
+            status: response.status,
+            statusText: response.statusText,
+            headers: Object.fromEntries(response.headers.entries()),
+            data: responseData,
+          };
+
+          showResponse(
+            `Статус: ${response.status} ${response.statusText}\n\n` +
+              `Ответ:\n${JSON.stringify(result.data, null, 2)}`,
+            !response.ok
+          );
+        } catch (error) {
+          showResponse("Ошибка запроса: " + error.message, true);
+        }
+      }
+
+      function showResponse(message, isError) {
+        const responseEl = document.getElementById("response");
+        responseEl.textContent = message;
+        responseEl.className = "response " + (isError ? "error" : "success");
+        responseEl.style.display = "block";
+      }
+
+      function clearResponse() {
+        const responseEl = document.getElementById("response");
+        responseEl.style.display = "none";
+      }
+    </script>
+  </body>
+</html>
