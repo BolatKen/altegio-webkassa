@@ -197,7 +197,7 @@ async def refresh_webkassa_api_key(db: AsyncSession) -> Optional[ApiKey]:
     except subprocess.TimeoutExpired:
         logger.error("❌ API key update script timed out after 60 seconds")
         await send_telegram_notification(
-            "Таймаут скрипта обновления API ключа Webkassa",
+            "Таймаут скрипта обновления API ключа Webкassa",
             {
                 "Проблема": "Скрипт не завершился за 60 секунд",
                 "Требуется": "Проверка работы API Webkassa и сетевого соединения"
@@ -207,7 +207,7 @@ async def refresh_webkassa_api_key(db: AsyncSession) -> Optional[ApiKey]:
     except Exception as e:
         logger.error(f"❌ Error refreshing API key: {e}", exc_info=True)
         await send_telegram_notification(
-            "Исключение при обновлении API ключа Webkassa",
+            "Исключение при обновлении API ключа Webкassa",
             {
                 "Ошибка": str(e),
                 "Тип ошибки": type(e).__name__,
@@ -548,7 +548,7 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
                             "Проблема": "Запрос не прошел даже с новым API ключом",
                             "Новый токен": f"{refreshed_key.api_key[:20]}...{refreshed_key.api_key[-10:]}",
                             "Ошибки": "; ".join(retry_result.get('errors', [])),
-                            "Требуется": "Немедленная проверка настроек Webкassa API"
+                            "Требуется": "Немедленная проверка настроек Webkassa API"
                         }
                     )
                 return retry_result
@@ -1312,6 +1312,307 @@ async def manual_refresh_api_key(db: AsyncSession = Depends(get_db_session)):
             "message": "Internal server error during API key refresh",
             "error": str(e)
         }
+
+
+@router.delete("/webhook/record/{record_id}")
+async def delete_webhook_record(
+    record_id: int,
+    db: AsyncSession = Depends(get_db_session)
+):
+    """
+    Удаляет конкретную webhook запись по ID
+    """
+    try:
+        # Ищем запись
+        webhook_record = await db.execute(
+            select(WebhookRecord).filter(WebhookRecord.id == record_id)
+        )
+        webhook_record = webhook_record.scalars().first()
+
+        if not webhook_record:
+            raise HTTPException(status_code=404, detail="Webhook record not found")
+        
+        # Сохраняем информацию для логов
+        resource_id = webhook_record.resource_id
+        company_id = webhook_record.company_id
+        processed = webhook_record.processed
+        
+        # Удаляем запись
+        await db.delete(webhook_record)
+        await db.commit()
+        
+        logger.info(f"🗑️ Deleted webhook record: ID={record_id}, resource_id={resource_id}, processed={processed}")
+        
+        return {
+            "success": True,
+            "message": f"Webhook record {record_id} deleted successfully",
+            "deleted_record": {
+                "id": record_id,
+                "resource_id": resource_id,
+                "company_id": company_id,
+                "was_processed": processed
+            }
+        }
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"Error deleting webhook record {record_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.delete("/webhook/resource/{resource_id}")
+async def delete_webhook_by_resource_id(
+    resource_id: int,
+    company_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db_session)
+):
+    """
+    Удаляет все webhook записи для конкретного resource_id
+    Опционально можно указать company_id для более точного поиска
+    """
+    try:
+        # Строим запрос
+        query = select(WebhookRecord).filter(WebhookRecord.resource_id == resource_id)
+        if company_id:
+            query = query.filter(WebhookRecord.company_id == company_id)
+        
+        # Получаем все записи для удаления
+        result = await db.execute(query)
+        records_to_delete = result.scalars().all()
+        
+        if not records_to_delete:
+            message = f"No webhook records found for resource_id {resource_id}"
+            if company_id:
+                message += f" and company_id {company_id}"
+            raise HTTPException(status_code=404, detail=message)
+        
+        deleted_info = []
+        for record in records_to_delete:
+            deleted_info.append({
+                "id": record.id,
+                "resource_id": record.resource_id,
+                "company_id": record.company_id,
+                "was_processed": record.processed,
+                "webkassa_status": record.webkassa_status
+            })
+            await db.delete(record)
+        
+        await db.commit()
+        
+        logger.info(f"🗑️ Deleted {len(deleted_info)} webhook records for resource_id {resource_id}")
+        for info in deleted_info:
+            logger.info(f"   - ID: {info['id']}, processed: {info['was_processed']}, status: {info['webkassa_status']}")
+        
+        return {
+            "success": True,
+            "message": f"Deleted {len(deleted_info)} webhook records for resource_id {resource_id}",
+            "deleted_count": len(deleted_info),
+            "deleted_records": deleted_info
+        }
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"Error deleting webhook records for resource_id {resource_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.delete("/webhook/failed")
+async def delete_failed_webhook_records(
+    confirm: bool = False,
+    db: AsyncSession = Depends(get_db_session)
+):
+    """
+    Удаляет все неуспешно обработанные webhook записи (processed=False)
+    
+    Параметры:
+    - confirm: Обязательный параметр для подтверждения операции (должен быть True)
+    """
+    if not confirm:
+        raise HTTPException(
+            status_code=400, 
+            detail="This operation requires confirmation. Add ?confirm=true to the request"
+        )
+    
+    try:
+        # Получаем все неуспешные записи
+        result = await db.execute(
+            select(WebhookRecord).filter(WebhookRecord.processed == False)
+        )
+        failed_records = result.scalars().all()
+        
+        if not failed_records:
+            return {
+                "success": True,
+                "message": "No failed webhook records found to delete",
+                "deleted_count": 0
+            }
+        
+        deleted_info = []
+        for record in failed_records:
+            deleted_info.append({
+                "id": record.id,
+                "resource_id": record.resource_id,
+                "company_id": record.company_id,
+                "webkassa_status": record.webkassa_status,
+                "processing_error": record.processing_error
+            })
+            await db.delete(record)
+        
+        await db.commit()
+        
+        logger.info(f"🗑️ Deleted {len(deleted_info)} failed webhook records")
+        for info in deleted_info[:5]:  # Показываем только первые 5 для логов
+            logger.info(f"   - ID: {info['id']}, resource_id: {info['resource_id']}, error: {info['processing_error'][:100] if info['processing_error'] else 'None'}")
+        if len(deleted_info) > 5:
+            logger.info(f"   ... и еще {len(deleted_info) - 5} записей")
+        
+        return {
+            "success": True,
+            "message": f"Deleted {len(deleted_info)} failed webhook records",
+            "deleted_count": len(deleted_info),
+            "deleted_records": deleted_info
+        }
+        
+    except Exception as e:
+        logger.error(f"Error deleting failed webhook records: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/webhook/records")
+async def list_webhook_records(
+    limit: int = 50,
+    offset: int = 0,
+    processed: Optional[bool] = None,
+    webkassa_status: Optional[str] = None,
+    resource_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db_session)
+):
+    """
+    Получает список webhook записей с фильтрацией
+    
+    Параметры:
+    - limit: максимальное количество записей (по умолчанию 50)
+    - offset: смещение для пагинации (по умолчанию 0)
+    - processed: фильтр по статусу обработки (True/False)
+    - webkassa_status: фильтр по статусу Webkassa (success/failed)
+    - resource_id: фильтр по конкретному resource_id
+    """
+    try:
+        # Строим запрос с фильтрами
+        query = select(WebhookRecord)
+        
+        if processed is not None:
+            query = query.filter(WebhookRecord.processed == processed)
+        
+        if webkassa_status:
+            query = query.filter(WebhookRecord.webkassa_status == webkassa_status)
+            
+        if resource_id:
+            query = query.filter(WebhookRecord.resource_id == resource_id)
+        
+        # Добавляем сортировку и пагинацию
+        query = query.order_by(WebhookRecord.created_at.desc()).offset(offset).limit(limit)
+        
+        # Выполняем запрос
+        result = await db.execute(query)
+        records = result.scalars().all()
+        
+        # Получаем общее количество записей для статистики
+        count_query = select(WebhookRecord)
+        if processed is not None:
+            count_query = count_query.filter(WebhookRecord.processed == processed)
+        if webkassa_status:
+            count_query = count_query.filter(WebhookRecord.webkassa_status == webkassa_status)
+        if resource_id:
+            count_query = count_query.filter(WebhookRecord.resource_id == resource_id)
+            
+        count_result = await db.execute(count_query)
+        total_count = len(count_result.scalars().all())
+        
+        # Формируем ответ
+        records_data = []
+        for record in records:
+            records_data.append({
+                "id": record.id,
+                "resource_id": record.resource_id,
+                "company_id": record.company_id,
+                "resource": record.resource,
+                "status": record.status,
+                "client_phone": record.client_phone,
+                "client_name": record.client_name,
+                "processed": record.processed,
+                "webkassa_status": record.webkassa_status,
+                "processing_error": record.processing_error,
+                "created_at": record.created_at.isoformat() if record.created_at else None,
+                "processed_at": record.processed_at.isoformat() if record.processed_at else None,
+                "comment": record.comment
+            })
+        
+        return {
+            "success": True,
+            "records": records_data,
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "total_count": total_count,
+                "returned_count": len(records_data)
+            },
+            "filters": {
+                "processed": processed,
+                "webkassa_status": webkassa_status,
+                "resource_id": resource_id
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listing webhook records: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/webhook/stats")
+async def get_webhook_stats(db: AsyncSession = Depends(get_db_session)):
+    """
+    Получает статистику по webhook записям
+    """
+    try:
+        # Общее количество записей
+        total_result = await db.execute(select(WebhookRecord))
+        total_count = len(total_result.scalars().all())
+        
+        # Количество обработанных
+        processed_result = await db.execute(select(WebhookRecord).filter(WebhookRecord.processed == True))
+        processed_count = len(processed_result.scalars().all())
+        
+        # Количество неоработанных
+        unprocessed_result = await db.execute(select(WebhookRecord).filter(WebhookRecord.processed == False))
+        unprocessed_count = len(unprocessed_result.scalars().all())
+        
+        # Количество успешных в Webkassa
+        success_result = await db.execute(select(WebhookRecord).filter(WebhookRecord.webkassa_status == "success"))
+        success_count = len(success_result.scalars().all())
+        
+        # Количество неуспешных в Webkassa
+        failed_result = await db.execute(select(WebhookRecord).filter(WebhookRecord.webkassa_status == "failed"))
+        failed_count = len(failed_result.scalars().all())
+        
+        return {
+            "success": True,
+            "stats": {
+                "total_records": total_count,
+                "processed_records": processed_count,
+                "unprocessed_records": unprocessed_count,
+                "webkassa_success": success_count,
+                "webkassa_failed": failed_count,
+                "processing_rate": round((processed_count / total_count * 100), 2) if total_count > 0 else 0,
+                "success_rate": round((success_count / total_count * 100), 2) if total_count > 0 else 0
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting webhook stats: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 
