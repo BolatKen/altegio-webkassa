@@ -335,7 +335,7 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
             "Count": service.amount,
             "Price": service.cost_per_unit ,#/ 100,  # Конвертация из копеек в тенге
             "PositionName": service.title,
-            "Discount": service.discount * service.cost / 100,  # Скидка в тенге
+            "Discount": service.discount / 100 * service.cost,  # Скидка в тенге
             "Tax": "0",
             "TaxType": "0", 
             "TaxPercent": "0"
@@ -354,7 +354,7 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
             "Count": abs(good["amount"]),
             "Price": good["cost_per_unit"],  # Конвертация из копеек в тенге
             "PositionName": good["title"],
-            "Discount": good["discount"] * good["cost"] / 100,  # Скидка в тенге
+            "Discount": good["discount"] / 100 * good["cost"],  # Скидка в тенге
             "Tax": "0",
             "TaxType": "0", 
             "TaxPercent": "0"
@@ -364,7 +364,7 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
         
         logger.info(f"  📦 Good {i+1}: {good['title']}")
         logger.info(f"     💵 Cost: {good['cost_per_unit']} тенге x {abs(good['amount'])} = {(good['cost_per_unit'] * abs(good['amount']))} тенге")
-        logger.info(f"     🎫 Discount: {good['discount']}% = {good['discount'] * good['cost'] / 100} тенге")
+        logger.info(f"     🎫 Discount: {good['discount']}% = {good['discount'] / 100 * good['cost']} тенге")
         logger.info(f"     💰 Total: {good_total} тенге")
 
 
