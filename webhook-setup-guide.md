@@ -16,11 +16,19 @@
    ngrok http 8000
    ```
 3. Скопируйте HTTPS URL из вывода ngrok (например: https://abc123.ngrok.io)
+   https://56f3ad6255c4.ngrok-free.app
 
 ### URL для webhook в Altegio:
 
-- **Основной webhook**: `https://abc123.ngrok.io/webhook`
-- **Тестовый webhook**: `https://abc123.ngrok.io/webhook/test`
+**Ваш текущий ngrok URL:** `https://7e94381749c1.ngrok-free.app`
+
+- **Основной webhook**: `https://7e94381749c1.ngrok-free.app/webhook`
+- **Тестовый webhook**: `https://7e94381749c1.ngrok-free.app/webhook/test`
+
+**⚠️ ВАЖНО для ngrok free:**
+
+- В настройках Altegio добавьте заголовок: `ngrok-skip-browser-warning: true`
+- Или используйте платную версию ngrok для стабильной работы
 
 ## Вариант 2: Использование localtunnel
 
@@ -82,16 +90,54 @@ lt --port 8000 --subdomain altegio-test
 
 ### Тестовый запрос с curl:
 
+**ВАЖНО: ngrok free требует специальный заголовок!**
+
 ```bash
-curl -X POST https://your-tunnel.ngrok.io/webhook/test \
+curl -X POST https://7e94381749c1.ngrok-free.app/webhook/test \
   -H "Content-Type: application/json" \
+  -H "ngrok-skip-browser-warning: true" \
   -d '{"test": "data", "resource": "record", "resource_id": 123}'
 ```
 
 ### Проверка статуса сервера:
 
 ```bash
-curl https://your-tunnel.ngrok.io/health
+curl -H "ngrok-skip-browser-warning: true" https://7e94381749c1.ngrok-free.app/health
+```
+
+### Тестирование основного webhook:
+
+```bash
+curl -X POST https://7e94381749c1.ngrok-free.app/webhook \
+  -H "Content-Type: application/json" \
+  -H "ngrok-skip-browser-warning: true" \
+  -d '{
+    "company_id": 12345,
+    "resource": "record",
+    "resource_id": 98765,
+    "status": "confirmed",
+    "data": {
+      "id": 98765,
+      "datetime": "2025-01-15 14:30:00",
+      "comment": "Стрижка + фч",
+      "paid_full": 1,
+      "client": {
+        "phone": "+77012345678",
+        "name": "Тестовый Клиент"
+      },
+      "services": [
+        {
+          "title": "Женская стрижка",
+          "cost_per_unit": 15000,
+          "amount": 1,
+          "cost": 15000,
+          "discount": 0
+        }
+      ],
+      "goods_transactions": [],
+      "documents": [{"id": 567890}]
+    }
+  }'
 ```
 
 ## Отладка
