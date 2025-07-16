@@ -272,22 +272,22 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
         logger.info(f"     💰 Total: {service_total} тенге")
 
     for i, good in enumerate(goods):
-        good_total = good.cost_per_unit * abs(good.amount) * (1 - good.discount / 100)  # Сумма с учетом скидки в процентах
+        good_total = good["cost_per_unit"] * abs(good["amount"]) * (1 - good["discount"] / 100)  # Сумма с учетом скидки в процентах
         position = {
-            "Count": abs(good.amount),
-            "Price": service.cost_per_unit ,#/ 100,  # Конвертация из копеек в тенге
-            "PositionName": good.title,
-            "Discount": good.discount * good.cost / 100,  # Скидка в тенге
+            "Count": abs(good["amount"]),
+            "Price": good["cost_per_unit"],  # Конвертация из копеек в тенге
+            "PositionName": good["title"],
+            "Discount": good["discount"] * good["cost"] / 100,  # Скидка в тенге
             "Tax": "0",
             "TaxType": "0", 
             "TaxPercent": "0"
         }
         positions.append(position)
-        total_sum_for_webkassa += service_total
+        total_sum_for_webkassa += good_total
         
-        logger.info(f"  📦 Service {i+1}: {good.title}")
-        logger.info(f"     💵 Cost: {good.cost_per_unit} тенге x {abs(good.amount)} = {(good.cost_per_unit * abs(good.amount))} тенге")
-        logger.info(f"     🎫 Discount: {good.discount}% = {good.discount * good.cost / 100} тенге")
+        logger.info(f"  📦 Good {i+1}: {good['title']}")
+        logger.info(f"     💵 Cost: {good['cost_per_unit']} тенге x {abs(good['amount'])} = {(good['cost_per_unit'] * abs(good['amount']))} тенге")
+        logger.info(f"     🎫 Discount: {good['discount']}% = {good['discount'] * good['cost'] / 100} тенге")
         logger.info(f"     💰 Total: {good_total} тенге")
 
 
@@ -845,7 +845,8 @@ async def handle_altegio_webhook(
                 webhook_record.processed_at = datetime.utcnow()
                 webhook_record.webkassa_status = "success" if webkassa_response.get("success") else "failed"
                 webhook_record.webkassa_response = json.dumps(webkassa_response)
-                webhook_record.webkassa_request_id = fiscalization_data.get("ExternalCheckNumber")
+                external_check_number = fiscalization_data.get("ExternalCheckNumber")
+                webhook_record.webkassa_request_id = str(external_check_number) if external_check_number is not None else None
                 await db.commit()
                 
                 processed_records.append(webhook_record.id)
@@ -976,7 +977,7 @@ async def send_telegram_notification(message: str, error_details: dict = None) -
     Отправляет уведомление в Telegram о критических ошибках
     """
     bot_token = "7922422379:AAEjk9PZuF8HgHNK3UoVDn-RIMXZhCfKewk"
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "-1002353046003")  # ID чата для уведомлений
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "1125559425")  # ID чата для уведомлений
     
     # Формируем сообщение
     telegram_message = f"🚨 ОШИБКА WEBKASSA\n\n"
@@ -987,8 +988,8 @@ async def send_telegram_notification(message: str, error_details: dict = None) -
         telegram_message += "📋 Детали ошибки:\n"
         for key, value in error_details.items():
             # Обрезаем длинные значения для читаемости
-            if isinstance(value, str) and len(value) > 200:
-                value = value[:200] + "..."
+            if isinstance(value, str) and len(value) > 400:
+                value = value[:400] + "..."
             telegram_message += f"• {key}: {value}\n"
     
     # Ограничиваем длину сообщения (Telegram лимит 4096 символов)
