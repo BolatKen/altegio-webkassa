@@ -5,6 +5,9 @@ import logging
 import json
 import os
 import re
+import sys
+import subprocess
+import asyncio
 from datetime import datetime
 from typing import Dict, Any, Optional, Union, List
 import uuid
@@ -304,12 +307,12 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
         logger.info(f"🔑 Using webkassa token from database: {webkassa_token}")
     
     logger.info(f"🔄 Starting data transformation for Webkassa")
-    logger.info(f"📥 Input webhook data: client_phone={payload.data.client.phone}, resource_id={payload.resource_id}")
+    client_phone = payload.data.client.phone if payload.data.client else ""
+    logger.info(f"📥 Input webhook data: client_phone={client_phone}, resource_id={payload.resource_id}")
     logger.info(f"📥 Input services count: {len(payload.data.services)}")
     logger.info(f"📥 Input altegio_document transactions count: {len(altegio_document.get('data', []))}")
     
     # Извлечение данных из Altegio webhook
-    client_phone = payload.data.client.phone
     # resource_id = payload.resource_id
     services = payload.data.services
     goods = payload.data.goods_transactions
@@ -842,8 +845,8 @@ async def handle_altegio_webhook(
             if webhook_record:
                 # Обновляем существующую запись
                 webhook_record.status = single_payload.status
-                webhook_record.client_phone = single_payload.data.client.phone
-                webhook_record.client_name = single_payload.data.client.name
+                webhook_record.client_phone = single_payload.data.client.phone if single_payload.data.client else ""
+                webhook_record.client_name = single_payload.data.client.name if single_payload.data.client else ""
                 webhook_record.record_date = datetime.fromisoformat(single_payload.data.datetime.replace(" ", "T").split("+")[0])
                 webhook_record.services_data = json.dumps([s.model_dump() for s in single_payload.data.services])
                 webhook_record.comment = single_payload.data.comment
@@ -861,8 +864,8 @@ async def handle_altegio_webhook(
                     resource=single_payload.resource,
                     resource_id=single_payload.resource_id,
                     status=single_payload.status,
-                    client_phone=single_payload.data.client.phone,
-                    client_name=single_payload.data.client.name,
+                    client_phone=single_payload.data.client.phone if single_payload.data.client else "",
+                    client_name=single_payload.data.client.name if single_payload.data.client else "",
                     record_date=datetime.fromisoformat(single_payload.data.datetime.replace(" ", "T").split("+")[0]),
                     services_data=json.dumps([s.model_dump() for s in single_payload.data.services]),
                     comment=single_payload.data.comment,
