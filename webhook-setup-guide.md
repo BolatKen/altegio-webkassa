@@ -159,8 +159,22 @@ curl -X POST https://7e94381749c1.ngrok-free.app/webhook \
    - Откройте http://localhost:4040 в браузере (веб-интерфейс ngrok)
 
 4. **Тестирование webhook**:
+
    - Сначала используйте `/webhook/test`
    - После успешного тестирования переключитесь на `/webhook`
+
+5. **Если нет API ключа Webkassa (ошибка "Webkassa API key not found"):**
+
+   ```bash
+   # Ручное обновление API ключа
+   curl -X POST -H "ngrok-skip-browser-warning: true" https://7e94381749c1.ngrok-free.app/webhook/refresh-api-key
+   ```
+
+   Или запустите скрипт напрямую в контейнере:
+
+   ```bash
+   docker-compose exec backend python /app/scripts/update_webkassa_key.py
+   ```
 
 ## После успешного тестирования
 

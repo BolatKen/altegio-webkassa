@@ -145,24 +145,72 @@ async def refresh_webkassa_api_key(db: AsyncSession) -> Optional[ApiKey]:
         import sys
         
         logger.info("📞 Calling update script...")
+        
+        # Проверяем существование скрипта
+        script_path = "/app/scripts/update_webkassa_key.py"
+        if not os.path.exists(script_path):
+            logger.error(f"❌ Update script not found at {script_path}")
+            return None
+        
         result = subprocess.run([
-            sys.executable, "/app/scripts/update_webkassa_key.py"
-        ], capture_output=True, text=True, cwd="/app")
+            sys.executable, script_path
+        ], capture_output=True, text=True, cwd="/app", timeout=60)  # Добавляем timeout
+        
+        logger.info(f"📝 Script return code: {result.returncode}")
+        logger.info(f"📝 Script stdout: {result.stdout[-500:]}")  # Последние 500 символов
+        if result.stderr:
+            logger.warning(f"📝 Script stderr: {result.stderr[-500:]}")
         
         if result.returncode == 0:
             logger.info("✅ API key update script completed successfully")
-            logger.info(f"📝 Script output: {result.stdout[-200:]}")  # Последние 200 символов
             
-            # Получаем обновленный ключ из БД
-            await db.commit()  # Обновляем сессию
+            # Ждем немного чтобы изменения применились
+            import asyncio
+            await asyncio.sleep(1)
+            
+            # Обновляем сессию и получаем ключ
+            await db.commit()
+            await db.rollback()  # Сбрасываем кеш сессии
+            
             return await get_webkassa_api_key(db)
         else:
             logger.error(f"❌ API key update script failed with code {result.returncode}")
             logger.error(f"❌ Script error: {result.stderr}")
+            
+            # Отправляем уведомление о неудаче скрипта
+            await send_telegram_notification(
+                "Ошибка выполнения скрипта обновления API ключа Webkassa",
+                {
+                    "Код ошибки": str(result.returncode),
+                    "STDOUT": result.stdout[-300:] if result.stdout else "Пусто",
+                    "STDERR": result.stderr[-300:] if result.stderr else "Пусто",
+                    "Путь скрипта": script_path,
+                    "Рабочая директория": "/app"
+                }
+            )
+            
             return None
             
+    except subprocess.TimeoutExpired:
+        logger.error("❌ API key update script timed out after 60 seconds")
+        await send_telegram_notification(
+            "Таймаут скрипта обновления API ключа Webkassa",
+            {
+                "Проблема": "Скрипт не завершился за 60 секунд",
+                "Требуется": "Проверка работы API Webkassa и сетевого соединения"
+            }
+        )
+        return None
     except Exception as e:
-        logger.error(f"❌ Error refreshing API key: {e}")
+        logger.error(f"❌ Error refreshing API key: {e}", exc_info=True)
+        await send_telegram_notification(
+            "Исключение при обновлении API ключа Webkassa",
+            {
+                "Ошибка": str(e),
+                "Тип ошибки": type(e).__name__,
+                "Требуется": "Проверка логов и состояния системы"
+            }
+        )
         return None
 
 
@@ -225,7 +273,33 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
     if not webkassa_token:
         api_key_record = await get_webkassa_api_key(db)
         if not api_key_record:
-            raise ValueError("Webkassa API key not found in database")
+            logger.warning("⚠️ No Webkassa API key found, attempting to get fresh key...")
+            
+            # Пытаемся получить новый ключ
+            refreshed_key = await refresh_webkassa_api_key(db)
+            if refreshed_key:
+                api_key_record = refreshed_key
+                logger.info("✅ Successfully obtained fresh API key for data preparation")
+            else:
+                error_msg = "Webkassa API key not found in database and unable to refresh"
+                logger.error(f"❌ {error_msg}")
+                
+                # Отправляем уведомление в Telegram о критической ошибке
+                await send_telegram_notification(
+                    "КРИТИЧЕСКАЯ ОШИБКА: Невозможно получить API ключ Webкassa для обработки данных",
+                    {
+                        "Проблема": "API ключ не найден в базе данных и не удалось получить новый",
+                        "Webhook ID": str(payload.resource_id),
+                        "Company ID": str(payload.company_id),
+                        "Клиент": payload.data.client.name if payload.data.client else "Неизвестен",
+                        "Телефон": payload.data.client.phone if payload.data.client else "Неизвестен",
+                        "Влияние": "Обработка webhook остановлена",
+                        "Требуется": "Проверка настроек Webkassa API и перезапуск скрипта обновления ключей"
+                    }
+                )
+                
+                raise ValueError(error_msg)
+        
         webkassa_token = api_key_record.user_id
         logger.info(f"🔑 Using webkassa token from database: {webkassa_token}")
     
@@ -1090,6 +1164,87 @@ async def test_webhook_endpoint(request: Request):
         logger.error(f"Error in test webhook: {e}", exc_info=True)
         return {
             "success": False,
+            "error": str(e)
+        }
+
+
+@router.post("/webhook/refresh-api-key")
+async def manual_refresh_api_key(db: AsyncSession = Depends(get_db_session)):
+    """
+    Ручное обновление API ключа Webkassa через эндпоинт
+    """
+    try:
+        logger.info("🔄 Manual API key refresh requested")
+        
+        # Проверяем текущий ключ
+        current_key = await get_webkassa_api_key(db)
+        if current_key:
+            logger.info(f"📋 Current key found: ID {current_key.id}, updated {current_key.updated_at}")
+        else:
+            logger.info("📋 No current key found in database")
+        
+        # Обновляем ключ
+        refreshed_key = await refresh_webkassa_api_key(db)
+        
+        if refreshed_key:
+            logger.info("✅ Manual API key refresh successful")
+            
+            # Отправляем уведомление об успехе
+            await send_telegram_notification(
+                "✅ Ручное обновление API ключа Webkassa выполнено успешно",
+                {
+                    "Результат": "Успех",
+                    "Новый ключ ID": str(refreshed_key.id),
+                    "Обновлен": str(refreshed_key.updated_at),
+                    "Токен": f"{refreshed_key.user_id[:20]}...{refreshed_key.user_id[-10:]}",
+                    "API ключ": f"{refreshed_key.api_key[:20]}...{refreshed_key.api_key[-10:]}"
+                }
+            )
+            
+            return {
+                "success": True,
+                "message": "API key refreshed successfully",
+                "key_info": {
+                    "id": refreshed_key.id,
+                    "service_name": refreshed_key.service_name,
+                    "updated_at": refreshed_key.updated_at.isoformat(),
+                    "token_preview": f"{refreshed_key.user_id[:20]}...{refreshed_key.user_id[-10:]}",
+                    "api_key_preview": f"{refreshed_key.api_key[:20]}...{refreshed_key.api_key[-10:]}"
+                }
+            }
+        else:
+            logger.error("❌ Manual API key refresh failed")
+            
+            # Отправляем уведомление о неудаче
+            await send_telegram_notification(
+                "❌ Ручное обновление API ключа Webkassa не удалось",
+                {
+                    "Результат": "Неудача",
+                    "Требуется": "Проверка логов и настроек API"
+                }
+            )
+            
+            return {
+                "success": False,
+                "message": "Failed to refresh API key",
+                "error": "API key refresh script failed"
+            }
+            
+    except Exception as e:
+        logger.error(f"❌ Error in manual API key refresh: {e}", exc_info=True)
+        
+        await send_telegram_notification(
+            "🚨 Ошибка при ручном обновлении API ключа Webkassa",
+            {
+                "Ошибка": str(e),
+                "Тип": type(e).__name__,
+                "Требуется": "Проверка системы"
+            }
+        )
+        
+        return {
+            "success": False,
+            "message": "Internal server error during API key refresh",
             "error": str(e)
         }
 
