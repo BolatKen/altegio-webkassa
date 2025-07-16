@@ -746,7 +746,9 @@ async def send_to_webkassa(data: dict, api_token: str, webhook_info: dict = None
                 # Формируем детальное сообщение об ошибке с информацией о webhook
                 error_log_message = f"❌ Webkassa API errors: {'; '.join(error_messages)}"
                 if webhook_info:
-                    error_log_message += f" | Webhook: resource_id={webhook_info.get('resource_id')}, company_id={webhook_info.get('company_id')}, client={webhook_info.get('client_name', 'Unknown')}"
+                    error_log_message += f" | Webhook Details: resource_id={webhook_info.get('resource_id')}, company_id={webhook_info.get('company_id')}, client={webhook_info.get('client_name', 'Unknown')}, phone={webhook_info.get('client_phone', 'Unknown')}, comment='{webhook_info.get('comment', '')}'"
+                    # Также логируем полный webhook для детального анализа
+                    logger.error(f"🔍 Full webhook data for error analysis: {json.dumps(webhook_info.get('full_webhook', {}), ensure_ascii=False, indent=2)}")
                 
                 logger.error(error_log_message)
                 return {"success": False, "errors": error_messages, "raw_response": response_data}
@@ -757,7 +759,8 @@ async def send_to_webkassa(data: dict, api_token: str, webhook_info: dict = None
     except httpx.RequestError as e:
         error_message = f"Webkassa API request failed: {e}"
         if webhook_info:
-            error_message += f" | Webhook: resource_id={webhook_info.get('resource_id')}, company_id={webhook_info.get('company_id')}"
+            error_message += f" | Webhook Details: resource_id={webhook_info.get('resource_id')}, company_id={webhook_info.get('company_id')}, client={webhook_info.get('client_name', 'Unknown')}, phone={webhook_info.get('client_phone', 'Unknown')}"
+            logger.error(f"🔍 Full webhook data for network error: {json.dumps(webhook_info.get('full_webhook', {}), ensure_ascii=False, indent=2)}")
         logger.error(error_message)
         return {"success": False, "error": f"Network error: {e}"}
     except httpx.HTTPStatusError as e:
@@ -765,13 +768,15 @@ async def send_to_webkassa(data: dict, api_token: str, webhook_info: dict = None
         decoded_error = decode_unicode_escapes(error_text)
         error_message = f"Webkassa API returned error status {e.response.status_code}: {decoded_error}"
         if webhook_info:
-            error_message += f" | Webhook: resource_id={webhook_info.get('resource_id')}, company_id={webhook_info.get('company_id')}"
+            error_message += f" | Webhook Details: resource_id={webhook_info.get('resource_id')}, company_id={webhook_info.get('company_id')}, client={webhook_info.get('client_name', 'Unknown')}, phone={webhook_info.get('client_phone', 'Unknown')}"
+            logger.error(f"🔍 Full webhook data for HTTP error: {json.dumps(webhook_info.get('full_webhook', {}), ensure_ascii=False, indent=2)}")
         logger.error(error_message)
         return {"success": False, "error": f"API error: {decoded_error}"}
     except Exception as e:
         error_message = f"Unexpected error during Webkassa API call: {e}"
         if webhook_info:
-            error_message += f" | Webhook: resource_id={webhook_info.get('resource_id')}, company_id={webhook_info.get('company_id')}"
+            error_message += f" | Webhook Details: resource_id={webhook_info.get('resource_id')}, company_id={webhook_info.get('company_id')}, client={webhook_info.get('client_name', 'Unknown')}, phone={webhook_info.get('client_phone', 'Unknown')}"
+            logger.error(f"🔍 Full webhook data for unexpected error: {json.dumps(webhook_info.get('full_webhook', {}), ensure_ascii=False, indent=2)}")
         logger.error(error_message)
         return {"success": False, "error": f"Unexpected error: {e}"}
 
@@ -951,7 +956,10 @@ async def handle_altegio_webhook(
                     "client_name": single_payload.data.client.name if single_payload.data.client else "Unknown",
                     "client_phone": single_payload.data.client.phone if single_payload.data.client else "Unknown",
                     "record_date": single_payload.data.datetime,
-                    "comment": single_payload.data.comment
+                    "comment": single_payload.data.comment,
+                    "status": single_payload.status,
+                    "resource": single_payload.resource,
+                    "full_webhook": single_payload.model_dump()  # Полная информация о webhook
                 }
 
                 webkassa_response = await send_to_webkassa_with_auto_refresh(db, fiscalization_data, webhook_info)
@@ -1132,7 +1140,9 @@ async def close_webkassa_shift(db: AsyncSession, api_token: str, webhook_info: d
                 
                 webhook_context = ""
                 if webhook_info:
-                    webhook_context = f" [Webhook: {webhook_info.get('resource_id', 'N/A')}, Company: {webhook_info.get('company_id', 'N/A')}, Client: {webhook_info.get('client_name', 'N/A')}]"
+                    webhook_context = f" [Webhook Details: resource_id={webhook_info.get('resource_id', 'N/A')}, company_id={webhook_info.get('company_id', 'N/A')}, client={webhook_info.get('client_name', 'N/A')}, phone={webhook_info.get('client_phone', 'N/A')}]"
+                    # Логируем полную информацию о webhook при ошибке закрытия смены
+                    logger.error(f"🔍 Full webhook data for shift close error: {json.dumps(webhook_info.get('full_webhook', {}), ensure_ascii=False, indent=2)}")
                 logger.error(f"❌ Webkassa shift close errors{webhook_context}: {'; '.join(error_messages)}")
                 return {"success": False, "errors": error_messages, "raw_response": response_data}
             
@@ -1143,7 +1153,8 @@ async def close_webkassa_shift(db: AsyncSession, api_token: str, webhook_info: d
     except httpx.RequestError as e:
         webhook_context = ""
         if webhook_info:
-            webhook_context = f" [Webhook: {webhook_info.get('resource_id', 'N/A')}, Company: {webhook_info.get('company_id', 'N/A')}, Client: {webhook_info.get('client_name', 'N/A')}]"
+            webhook_context = f" [Webhook Details: resource_id={webhook_info.get('resource_id', 'N/A')}, company_id={webhook_info.get('company_id', 'N/A')}, client={webhook_info.get('client_name', 'N/A')}, phone={webhook_info.get('client_phone', 'N/A')}]"
+            logger.error(f"🔍 Full webhook data for shift close network error: {json.dumps(webhook_info.get('full_webhook', {}), ensure_ascii=False, indent=2)}")
         logger.error(f"Webkassa shift close request failed{webhook_context}: {e}")
         return {"success": False, "error": f"Network error: {e}"}
     except httpx.HTTPStatusError as e:
@@ -1151,13 +1162,15 @@ async def close_webkassa_shift(db: AsyncSession, api_token: str, webhook_info: d
         decoded_error = decode_unicode_escapes(error_text)
         webhook_context = ""
         if webhook_info:
-            webhook_context = f" [Webhook: {webhook_info.get('resource_id', 'N/A')}, Company: {webhook_info.get('company_id', 'N/A')}, Client: {webhook_info.get('client_name', 'N/A')}]"
+            webhook_context = f" [Webhook Details: resource_id={webhook_info.get('resource_id', 'N/A')}, company_id={webhook_info.get('company_id', 'N/A')}, client={webhook_info.get('client_name', 'N/A')}, phone={webhook_info.get('client_phone', 'N/A')}]"
+            logger.error(f"🔍 Full webhook data for shift close HTTP error: {json.dumps(webhook_info.get('full_webhook', {}), ensure_ascii=False, indent=2)}")
         logger.error(f"Webkassa shift close returned error status {e.response.status_code}{webhook_context}: {decoded_error}")
         return {"success": False, "error": f"API error: {decoded_error}"}
     except Exception as e:
         webhook_context = ""
         if webhook_info:
-            webhook_context = f" [Webhook: {webhook_info.get('resource_id', 'N/A')}, Company: {webhook_info.get('company_id', 'N/A')}, Client: {webhook_info.get('client_name', 'N/A')}]"
+            webhook_context = f" [Webhook Details: resource_id={webhook_info.get('resource_id', 'N/A')}, company_id={webhook_info.get('company_id', 'N/A')}, client={webhook_info.get('client_name', 'N/A')}, phone={webhook_info.get('client_phone', 'N/A')}]"
+            logger.error(f"🔍 Full webhook data for shift close unexpected error: {json.dumps(webhook_info.get('full_webhook', {}), ensure_ascii=False, indent=2)}")
         logger.error(f"Unexpected error during Webkassa shift close{webhook_context}: {e}")
         return {"success": False, "error": f"Unexpected error: {e}"}
 
