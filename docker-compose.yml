@@ -15,7 +15,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
     ports:
-      - "5432:5432"
+      - "5433:5432"
     networks:
       - app-network
     healthcheck:
@@ -61,7 +61,7 @@ services:
       - ./app:/app/app:ro
       - ./scripts:/app/scripts:ro
     ports:
-      - "8000:8000"
+      - "8001:8000"
     depends_on:
       db:
         condition: service_healthy
@@ -80,8 +80,8 @@ services:
     container_name: altegio_webkassa_nginx
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      - "8081:80"
+      - "8443:443"
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
       - ./nginx/ssl:/etc/nginx/ssl:ro
