@@ -789,6 +789,8 @@ async def handle_altegio_webhook(
             logger.info(f"📦 Received single webhook item, normalized to array")
         
         processed_records = []
+        failed_records = []
+        skipped_records = []
         
         for single_payload in webhook_list:
             logger.info(f"Processing webhook: company_id={single_payload.company_id}, "
@@ -819,6 +821,7 @@ async def handle_altegio_webhook(
             
             if not conditions_met:
                 logger.info(f"Webhook {single_payload.resource_id} does not meet the required conditions for processing.")
+                skipped_records.append(single_payload.resource_id)
                 continue  # Пропускаем этот webhook, но продолжаем обработку остальных
 
             # Проверяем, не был ли уже обработан
@@ -830,7 +833,8 @@ async def handle_altegio_webhook(
                 )
             )
             if existing_record.scalars().first():
-                logger.info(f"Webhook with resource_id {single_payload.resource_id} already processed.")
+                logger.info(f"✅ Webhook with resource_id {single_payload.resource_id} already successfully processed, skipping.")
+                skipped_records.append(single_payload.resource_id)
                 continue  # Пропускаем уже обработанный webhook
 
             # Ищем существующую запись или создаем новую
@@ -843,7 +847,12 @@ async def handle_altegio_webhook(
             webhook_record = webhook_record.scalars().first()
 
             if webhook_record:
-                # Обновляем существующую запись
+                # Обновляем существующую запись (возможно, предыдущая попытка была неуспешной)
+                logger.info(f"🔄 Found existing webhook record (ID: {webhook_record.id}), updating for retry...")
+                logger.info(f"   📋 Previous status: processed={webhook_record.processed}, webkassa_status={webhook_record.webkassa_status}")
+                if webhook_record.processing_error:
+                    logger.info(f"   ⚠️ Previous error: {webhook_record.processing_error}")
+                
                 webhook_record.status = single_payload.status
                 webhook_record.client_phone = single_payload.data.client.phone if single_payload.data.client else ""
                 webhook_record.client_name = single_payload.data.client.name if single_payload.data.client else ""
@@ -859,6 +868,7 @@ async def handle_altegio_webhook(
                 webhook_record.webkassa_request_id = None
             else:
                 # Создаем новую запись
+                logger.info(f"📝 Creating new webhook record for resource_id {single_payload.resource_id}")
                 webhook_record = WebhookRecord(
                     company_id=single_payload.company_id,
                     resource=single_payload.resource,
@@ -888,6 +898,7 @@ async def handle_altegio_webhook(
                     logger.warning(f"No document ID found in webhook for resource_id {single_payload.resource_id}")
                     webhook_record.processing_error = "No document ID found in webhook"
                     webhook_record.processed = False
+                    failed_records.append(webhook_record.id)  # Добавляем в список неуспешных
                     await db.commit()
                     continue  # Пропускаем этот webhook
 
@@ -914,41 +925,92 @@ async def handle_altegio_webhook(
                 is_success = webkassa_response.get("success", False)
                 if is_success:
                     logger.info(f"✅ SUCCESS: Webkassa fiscalization completed")
+                    
+                    # Помечаем как обработанный только при успешной фискализации
+                    webhook_record.processed = True
+                    webhook_record.processed_at = datetime.utcnow()
+                    webhook_record.webkassa_status = "success"
+                    webhook_record.processing_error = None  # Очищаем ошибки при успехе
+                    processed_records.append(webhook_record.id)  # Добавляем в список успешно обработанных
                 else:
                     logger.info(f"❌ FAILED: Webkassa fiscalization failed")
-                    # Ошибки уже залогированы в send_to_webkassa с декодированием
+                    
+                    # При неудаче НЕ помечаем как обработанный, чтобы можно было повторить
+                    webhook_record.processed = False
+                    webhook_record.processed_at = None
+                    webhook_record.webkassa_status = "failed"
+                    
+                    # Сохраняем детали ошибки для анализа
+                    error_details = []
+                    if "errors" in webkassa_response:
+                        error_details.extend(webkassa_response["errors"])
+                    if "error" in webkassa_response:
+                        error_details.append(webkassa_response["error"])
+                    webhook_record.processing_error = "; ".join(error_details) if error_details else "Unknown Webkassa error"
+                    failed_records.append(webhook_record.id)  # Добавляем в список неуспешных
 
-                webhook_record.processed = True
-                webhook_record.processed_at = datetime.utcnow()
-                webhook_record.webkassa_status = "success" if webkassa_response.get("success") else "failed"
+                # Общие поля, которые записываются в любом случае для анализа
                 webhook_record.webkassa_response = json.dumps(webkassa_response)
                 external_check_number = fiscalization_data.get("ExternalCheckNumber")
                 webhook_record.webkassa_request_id = str(external_check_number) if external_check_number is not None else None
                 await db.commit()
                 
-                processed_records.append(webhook_record.id)
-                
             except Exception as e:
                 logger.error(f"Error processing webhook {single_payload.resource_id}: {str(e)}", exc_info=True)
                 webhook_record.processing_error = str(e)
                 webhook_record.processed = False
+                failed_records.append(webhook_record.id)  # Добавляем в список неуспешных
                 await db.commit()
                 continue  # Продолжаем обработку других webhook
         
-        if processed_records:
+        # Формируем детальную статистику обработки
+        total_received = len(webhook_list)
+        successful_count = len(processed_records)
+        failed_count = len(failed_records)
+        skipped_count = len(skipped_records)
+        
+        logger.info(f"📊 Webhook processing summary:")
+        logger.info(f"   📥 Total received: {total_received}")
+        logger.info(f"   ✅ Successfully processed: {successful_count}")
+        logger.info(f"   ❌ Failed to process: {failed_count}")
+        logger.info(f"   ⏭️ Skipped: {skipped_count}")
+        
+        if successful_count > 0:
+            success_message = f"Successfully processed {successful_count} of {total_received} webhook(s)"
+            if failed_count > 0:
+                success_message += f" ({failed_count} failed, will retry)"
+            if skipped_count > 0:
+                success_message += f" ({skipped_count} skipped)"
+                
             return WebhookResponse(
                 success=True,
-                message=f"Successfully processed {len(processed_records)} webhook(s)",
-                record_id=processed_records[0],
+                message=success_message,
+                record_id=processed_records[0] if processed_records else None,
                 record_ids=processed_records,
-                processed_count=len(processed_records)
+                processed_count=successful_count
             )
         else:
-            return WebhookResponse(
-                success=True,
-                message=f"Received {len(webhook_list)} webhook(s), but none met processing conditions",
-                processed_count=0
-            )
+            if failed_count > 0:
+                failure_message = f"Failed to process {failed_count} webhook(s)"
+                if skipped_count > 0:
+                    failure_message += f", {skipped_count} skipped"
+                failure_message += ". Failed webhooks will be retried."
+                
+                return WebhookResponse(
+                    success=False,  # Указываем неуспех, если ни один не обработался
+                    message=failure_message,
+                    processed_count=0
+                )
+            else:
+                skip_message = f"Received {total_received} webhook(s), but none met processing conditions"
+                if skipped_count > 0:
+                    skip_message += f" ({skipped_count} skipped due to conditions, 0 due to already processed)"
+                
+                return WebhookResponse(
+                    success=True,
+                    message=skip_message,
+                    processed_count=0
+                )
         
     except HTTPException as e:
         raise e
