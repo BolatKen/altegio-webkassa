@@ -335,7 +335,7 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
             "Count": service.amount,
             "Price": service.cost_per_unit ,#/ 100,  # Конвертация из копеек в тенге
             "PositionName": service.title,
-            "Discount": service.discount / 100 * service.cost_per_unit,  # Скидка в тенге
+            "Discount": service.discount / 100 * service.first_cost,  # Скидка в тенге
             "Tax": "0",
             "TaxType": "0", 
             "TaxPercent": "0"
@@ -354,7 +354,7 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
             "Count": abs(good["amount"]),
             "Price": good["cost_per_unit"],  # Конвертация из копеек в тенге
             "PositionName": good["title"],
-            "Discount": good["discount"] / 100 * good["cost_per_unit"],  # Скидка в тенге
+            "Discount": good["discount"] / 100 * good["first_cost"],  # Скидка в тенге
             "Tax": "0",
             "TaxType": "0", 
             "TaxPercent": "0"
