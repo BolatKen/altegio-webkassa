@@ -349,12 +349,18 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
     return webkassa_data
 
 
+
+
+
+
+
 async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: dict) -> dict:
     """
     Отправляет данные в Webkassa API с автоматическим обновлением ключа при ошибке авторизации.
     """
     # Получаем API ключ
     api_key_record = await get_webkassa_api_key(db)
+
     if not api_key_record:
         logger.error("❌ No Webkassa API key found in database")
         # Пытаемся обновить ключ
@@ -402,6 +408,36 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
                 return retry_result
             else:
                 logger.error("❌ Failed to refresh API key")
+                return result
+    
+    
+    # Проверяем, нет ли ошибки закрытия смены
+    if not result["success"] and "errors" in result:
+        # Ищем ошибку закрытия смены (код 11)
+        shift_error_found = False
+        for error_msg in result["errors"]:
+            if "закрыть смену" in error_msg or "Code 11:" in error_msg:
+                shift_error_found = True
+                break
+        
+        if shift_error_found:
+            logger.warning("⚠️ Shift close error detected - attempting to close shift...")
+            
+            # Пытаемся закрыть смену
+            closed_shift = await close_webkassa_shift(db, api_token)
+            
+            if closed_shift["success"]:
+                logger.info("✅ Successfully closed shift, retrying original request...")
+                
+                # Повторяем запрос после закрытия смены
+                retry_result = await send_to_webkassa(webkassa_data, api_token)
+                if retry_result["success"]:
+                    logger.info("✅ Request succeeded after shift close")
+                else:
+                    logger.error("❌ Request failed even after shift close")
+                return retry_result
+            else:
+                logger.error("❌ Failed to close shift")
                 return result
     
     return result
@@ -705,6 +741,70 @@ async def get_webhook_status(
     except Exception as e:
         logger.error(f"Error getting webhook status: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+async def close_webkassa_shift(db: AsyncSession, api_token: str) -> dict:
+    """
+    Закрывает смену в Webkassa через API.
+    """
+    # URL для закрытия смены
+    shift_close_url = "https://devkkm.webkassa.kz/api/v4/ZReport"
+    
+    # Заголовки для запроса
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": "WKD-9BCE5F1E-AE33-4F39-BF8B-ABDBF2376398"  # API ключ для закрытия смены
+    }
+    
+    # Данные для запроса
+    request_data = {
+        "Token": api_token,  # Токен авторизации
+        "cashboxUniqueNumber": os.getenv("WEBKASSA_CASHBOX_ID")  # ID кассы
+    }
+
+    logger.info(f"🔄 Attempting to close Webkassa shift...")
+    logger.info(f"🌐 Sending to: {shift_close_url}")
+    logger.info(f"🔑 Using token: {api_token[:20]}...")
+    logger.info(f"📦 Cashbox ID: {request_data['cashboxUniqueNumber']}")
+    logger.info(f"📋 Request data: {json.dumps(request_data, ensure_ascii=False, indent=2)}")
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(shift_close_url, json=request_data, headers=headers, timeout=30)
+            response_data = response.json()
+            
+            # Логируем ответ с декодированием Unicode
+            formatted_response = format_api_response(response_data)
+            logger.info(f"📤 Webkassa shift close response received:")
+            logger.info(f"🎯 Response: {formatted_response}")
+            
+            # Если есть ошибки в ответе, извлекаем и декодируем их
+            if "Errors" in response_data and response_data["Errors"]:
+                error_messages = []
+                for error in response_data["Errors"]:
+                    error_text = error.get("Text", "")
+                    decoded_error = decode_unicode_escapes(error_text)
+                    error_code = error.get("Code", "")
+                    error_messages.append(f"Code {error_code}: {decoded_error}")
+                
+                logger.error(f"❌ Webkassa shift close errors: {'; '.join(error_messages)}")
+                return {"success": False, "errors": error_messages, "raw_response": response_data}
+            
+            response.raise_for_status()
+            logger.info("✅ Webkassa shift closed successfully")
+            return {"success": True, "data": response_data}
+            
+    except httpx.RequestError as e:
+        logger.error(f"Webkassa shift close request failed: {e}")
+        return {"success": False, "error": f"Network error: {e}"}
+    except httpx.HTTPStatusError as e:
+        error_text = e.response.text
+        decoded_error = decode_unicode_escapes(error_text)
+        logger.error(f"Webkassa shift close returned error status {e.response.status_code}: {decoded_error}")
+        return {"success": False, "error": f"API error: {decoded_error}"}
+    except Exception as e:
+        logger.error(f"Unexpected error during Webkassa shift close: {e}")
+        return {"success": False, "error": f"Unexpected error: {e}"}
 
 
 
