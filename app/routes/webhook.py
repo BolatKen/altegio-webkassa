@@ -9,7 +9,7 @@ import sys
 import subprocess
 import asyncio
 from datetime import datetime
-from typing import Dict, Any, Optional, Union, List
+from typing import Dict, Any, Optional, Union, List, Tuple
 import uuid
 
 import httpx
@@ -32,6 +32,29 @@ def should_skip_transaction(transaction_comment: str) -> bool:
     Проверяет, нужно ли пропустить транзакцию на основе комментария
     """
     return transaction_comment == ACQUIRING_COMMISSION_COMMENT
+
+def get_client_data(client) -> Tuple[str, str]:
+    """
+    Безопасно извлекает телефон и имя клиента из разных форматов данных
+    Returns: (client_phone, client_name)
+    """
+    client_phone = ""
+    client_name = ""
+    
+    if client:
+        if isinstance(client, dict):
+            client_phone = client.get('phone', '')
+            client_name = client.get('name', '')
+        elif isinstance(client, list) and client:
+            first_client = client[0]
+            if isinstance(first_client, dict):
+                client_phone = first_client.get('phone', '')
+                client_name = first_client.get('name', '')
+        elif hasattr(client, 'phone'):
+            client_phone = client.phone
+            client_name = client.name
+    
+    return client_phone, client_name
 
 # Очередь для обработки webhook - предотвращает параллельную обработку
 webhook_processing_semaphore = asyncio.Semaphore(1)  # Только один webhook одновременно
@@ -363,14 +386,15 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
                 logger.error(f"❌ {error_msg}")
                 
                 # Отправляем уведомление в Telegram о критической ошибке
+                client_phone, client_name = get_client_data(payload.data.client)
                 await send_telegram_notification(
                     "КРИТИЧЕСКАЯ ОШИБКА: Невозможно получить API ключ Webкassa для обработки данных",
                     {
                         "Проблема": "API ключ не найден в базе данных и не удалось получить новый",
                         "Webhook ID": str(payload.resource_id),
                         "Company ID": str(payload.company_id),
-                        "Клиент": payload.data.client.name if payload.data.client else "Неизвестен",
-                        "Телефон": payload.data.client.phone if payload.data.client else "Неизвестен",
+                        "Клиент": client_name if client_name else "Неизвестен",
+                        "Телефон": client_phone if client_phone else "Неизвестен",
                         "Влияние": "Обработка webhook остановлена",
                         "Требуется": "Проверка настроек Webkassa API и перезапуск скрипта обновления ключей"
                     }
@@ -382,21 +406,7 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
         logger.info(f"🔑 Using webkassa token from database: {webkassa_token}")
     
     logger.info(f"🔄 Starting data transformation for Webkassa")
-    client_phone = ""
-    client_name = ""
-
-    if payload.data.client:
-        if isinstance(payload.data.client, dict):
-            client_phone = payload.data.client.get('phone', '')
-            client_name = payload.data.client.get('name', '')
-        elif isinstance(payload.data.client, list) and payload.data.client:
-            first_client = payload.data.client[0]
-            if isinstance(first_client, dict):
-                client_phone = first_client.get('phone', '')
-                client_name = first_client.get('name', '')
-        elif hasattr(payload.data.client, 'phone'):
-            client_phone = payload.data.client.phone
-            client_name = payload.data.client.name
+    client_phone, client_name = get_client_data(payload.data.client)
     
     logger.info(f"📥 Input webhook data: client_phone={client_phone}, resource_id={payload.resource_id}")
     logger.info(f"📥 Input services count: {len(payload.data.services)}")
@@ -593,7 +603,7 @@ async def prepare_webkassa_data_for_goods_sale(payload: AltegioWebhookPayload, a
         logger.info(f"🔑 Using webkassa token from database: {webkassa_token}")
     
     logger.info(f"🛒 Starting goods sale data transformation for Webkassa")
-    client_phone = payload.data.client.phone if payload.data.client else ""
+    client_phone, client_name = get_client_data(payload.data.client)
     logger.info(f"📥 Input goods sale webhook data: client_phone={client_phone}, resource_id={payload.resource_id}")
     
     positions = []
@@ -1193,8 +1203,9 @@ async def process_webhook_internal(
             # Обновляем существующую запись
             logger.info(f"🔄 Found existing webhook record (ID: {webhook_record.id}), updating for retry...")
             webhook_record.status = payload.status
-            webhook_record.client_phone = payload.data.client.phone if payload.data.client else ""
-            webhook_record.client_name = payload.data.client.name if payload.data.client else ""
+            client_phone, client_name = get_client_data(payload.data.client)
+            webhook_record.client_phone = client_phone
+            webhook_record.client_name = client_name
             # Обрабатываем datetime
             if payload.data.datetime:
                 webhook_record.record_date = datetime.fromisoformat(payload.data.datetime.replace(" ", "T").split("+")[0])
@@ -1226,13 +1237,14 @@ async def process_webhook_internal(
                 except (ValueError, AttributeError) as e:
                     logger.warning(f"Failed to parse create_date '{payload.data.create_date}': {e}, using current time")
             
+            client_phone, client_name = get_client_data(payload.data.client)
             webhook_record = WebhookRecord(
                 company_id=payload.company_id,
                 resource=payload.resource,
                 resource_id=payload.resource_id,
                 status=payload.status,
-                client_phone=payload.data.client.phone if payload.data.client else "",
-                client_name=payload.data.client.name if payload.data.client else "",
+                client_phone=client_phone,
+                client_name=client_name,
                 record_date=record_date,
                 services_data=json.dumps([s.model_dump() for s in payload.data.services]),
                 comment=payload.data.comment,
@@ -1312,11 +1324,12 @@ async def process_webhook_internal(
             logger.info(f"💰 Prepared Webkassa fiscalization data for {payload.resource_id}")
 
             # Подготавливаем информацию о webhook для логирования
+            client_phone, client_name = get_client_data(payload.data.client)
             webhook_info = {
                 "resource_id": payload.resource_id,
                 "company_id": payload.company_id,
-                "client_name": payload.data.client.name if payload.data.client else "Unknown",
-                "client_phone": payload.data.client.phone if payload.data.client else "Unknown",
+                "client_name": client_name if client_name else "Unknown",
+                "client_phone": client_phone if client_phone else "Unknown",
                 "record_date": payload.data.datetime if payload.data.datetime else (payload.data.create_date if payload.data.create_date else "Unknown"),
                 "comment": payload.data.comment,
                 "status": payload.status,
