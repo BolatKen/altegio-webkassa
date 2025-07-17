@@ -192,7 +192,7 @@ class AltegioRecordData(BaseModel):
     supplier: List[Any] = Field(default_factory=list, description="Поставщики (для goods_operations_sale)")
     
     # Клиент - может быть разного формата
-    client: Optional[Union[AltegioClient, AltegioSimpleClient]] = Field(None, description="Данные клиента")
+    client: Optional[Any] = Field(None, description="Клиент")
     
     class Config:
         extra = "allow"  # Разрешаем дополнительные поля, которые не описаны в схеме

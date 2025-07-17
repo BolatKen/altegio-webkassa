@@ -373,7 +373,22 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
         logger.info(f"🔑 Using webkassa token from database: {webkassa_token}")
     
     logger.info(f"🔄 Starting data transformation for Webkassa")
-    client_phone = payload.data.client.phone if payload.data.client else ""
+    client_phone = ""
+    client_name = ""
+
+    if payload.data.client:
+        if isinstance(payload.data.client, dict):
+            client_phone = payload.data.client.get('phone', '')
+            client_name = payload.data.client.get('name', '')
+        elif isinstance(payload.data.client, list) and payload.data.client:
+            first_client = payload.data.client[0]
+            if isinstance(first_client, dict):
+                client_phone = first_client.get('phone', '')
+                client_name = first_client.get('name', '')
+        elif hasattr(payload.data.client, 'phone'):
+            client_phone = payload.data.client.phone
+            client_name = payload.data.client.name
+    
     logger.info(f"📥 Input webhook data: client_phone={client_phone}, resource_id={payload.resource_id}")
     logger.info(f"📥 Input services count: {len(payload.data.services)}")
     logger.info(f"📥 Input altegio_document type: {type(altegio_document)}")
