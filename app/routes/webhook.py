@@ -394,23 +394,29 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
     transactions = []
     
     # Проверяем тип и формат документа
-    if isinstance(altegio_document, dict) and altegio_document.get('data', {}).get('state'):
-        # Новый формат для goods_operations_sale
-        logger.info(f"📦 Processing goods sale document format")
-        sale_transactions = altegio_document.get('data', {}).get('state', {}).get('payment_transactions', [])
-        transactions = sale_transactions
-        logger.info(f"📥 Found {len(transactions)} payment transactions in goods sale document")
-    else:
-        # Старый формат для обычных транзакций
-        logger.info(f"📋 Processing standard transactions document format")
-        if isinstance(altegio_document, dict):
-            transactions = altegio_document.get('data', [])
-        elif isinstance(altegio_document, list):
-            transactions = altegio_document
+    if isinstance(altegio_document, dict):
+        # Проверяем, есть ли структура goods sale document
+        if altegio_document.get('data', {}) and isinstance(altegio_document.get('data', {}), dict) and altegio_document.get('data', {}).get('state'):
+            # Новый формат для goods_operations_sale
+            logger.info(f"📦 Processing goods sale document format")
+            sale_transactions = altegio_document.get('data', {}).get('state', {}).get('payment_transactions', [])
+            transactions = sale_transactions
+            logger.info(f"📥 Found {len(transactions)} payment transactions in goods sale document")
         else:
-            logger.warning(f"Unknown altegio_document format: {type(altegio_document)}")
-            transactions = []
-        logger.info(f"📥 Found {len(transactions)} transactions in standard document")
+            # Словарь, но стандартный формат
+            logger.info(f"📋 Processing standard transactions document format (dict)")
+            transactions = altegio_document.get('data', [])
+            logger.info(f"📥 Found {len(transactions)} transactions in standard document (dict)")
+    elif isinstance(altegio_document, list):
+        # Список транзакций
+        logger.info(f"📋 Processing standard transactions document format (list)")
+        transactions = altegio_document
+        logger.info(f"📥 Found {len(transactions)} transactions in standard document (list)")
+    else:
+        # Неизвестный формат документа
+        logger.warning(f"Unknown altegio_document format: {type(altegio_document)}")
+        transactions = []
+        logger.info(f"📥 Found {len(transactions)} transactions (unknown format)")
 
     positions = []
     payments = []
@@ -459,13 +465,7 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
         logger.info(f"     🎫 Discount: {good['discount']}% = {good['discount'] / 100 * good['cost']} тенге")
         logger.info(f"     💰 Total: {good_total} тенге")
 
-    # Извлечение данных из Altegio document (стандартный формат для record)
-    if isinstance(altegio_document, dict):
-        transactions = altegio_document.get('data', [])
-    elif isinstance(altegio_document, list):
-        transactions = altegio_document
-    else:
-        transactions = []
+    # Обработка платежей из transactions (уже извлеченных выше)
     logger.info(f"💳 Processing {len(transactions)} transactions from Altegio document:")
     
     # Обработка платежей из Altegio document (стандартный формат)
