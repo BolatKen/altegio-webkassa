@@ -24,6 +24,19 @@ from app.schemas.altegio import AltegioWebhookPayload, WebhookResponse
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# Очередь для обработки webhook - предотвращает параллельную обработку
+webhook_processing_semaphore = asyncio.Semaphore(1)  # Только один webhook одновременно
+webhook_processing_queue = asyncio.Queue()
+
+class WebhookTask:
+    """Задача для обработки webhook в очереди"""
+    def __init__(self, payload, request, db_session):
+        self.payload = payload
+        self.request = request
+        self.db_session = db_session
+        self.result_future = asyncio.Future()
+        self.task_id = f"{payload.resource_id}_{payload.company_id}"
+
 
 def decode_unicode_escapes(text: str) -> str:
     """
@@ -31,7 +44,7 @@ def decode_unicode_escapes(text: str) -> str:
     Например: "\\u0421\\u0440\\u043e\\u043a" -> "Срок"
     """
     try:
-        # Заменяем двойные обратные слэши на одинарные
+        # Заменяем двойные обратные слэшы на одинарные
         text = text.replace('\\\\u', '\\u')
         
         # Декодируем unicode escape последовательности
@@ -272,7 +285,7 @@ async def refresh_webkassa_api_key(db: AsyncSession) -> Optional[ApiKey]:
 
 async def get_webkassa_api_key(db: AsyncSession) -> Optional[ApiKey]:
     """
-    Получает API ключ Webkassa из базы данных с подробным логированием.
+    Получает API ключ Webкassa из базы данных с подробным логированием.
     """
     logger.info("🔍 Searching for Webkassa API key in database...")
     
@@ -493,8 +506,8 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
 
 async def prepare_webkassa_data_for_goods_sale(payload: AltegioWebhookPayload, altegio_document: Dict[str, Any], db: AsyncSession, webkassa_token: str = None) -> Dict[str, Any]:
     """
-    Преобразует данные из Altegio goods_operations_sale webhook в формат, ожидаемый Webkassa.
-    Специальная обработка для продаж товаров - данные берутся из самого webhook.
+    Преобразует данные из Altegio goods_operations_sale webhook в формат, ожидаемый Webкassa.
+    Специальная обработка для продаж товаров - данные берутся из документа продажи.
     """
     # Получаем токен из базы данных, если не передан
     if not webkassa_token:
@@ -537,44 +550,68 @@ async def prepare_webkassa_data_for_goods_sale(payload: AltegioWebhookPayload, a
     payments = []
     total_sum_for_webkassa = 0
 
-    # Для goods_operations_sale данные товара находятся прямо в webhook
-    # Создаем позицию из данных webhook
-    item_count = abs(payload.data.amount) if payload.data.amount else 1  # Используем абсолютное значение
-    item_price = payload.data.cost_per_unit if payload.data.cost_per_unit else 0
-    item_discount = payload.data.discount if payload.data.discount else 0
-    item_cost = payload.data.cost if payload.data.cost else 0
-    
-    # Рассчитываем итоговую стоимость позиции
-    item_total = item_cost  # Используем уже рассчитанную стоимость из webhook
-    
-    # Название товара
-    item_title = payload.data.good.title if payload.data.good else "Unknown Item"
-    
-    position = {
-        "Count": item_count,
-        "Price": item_price,
-        "PositionName": item_title,
-        "Discount": item_discount,  # Скидка в тенге
-        "Tax": "0",
-        "TaxType": "0", 
-        "TaxPercent": "0"
-    }
-    positions.append(position)
-    total_sum_for_webkassa = item_total
-    
-    logger.info(f"  🛒 Goods Sale Item: {item_title}")
-    logger.info(f"     💵 Price: {item_price} тенге x {item_count} = {item_price * item_count} тенге")
-    logger.info(f"     🎫 Discount: {item_discount} тенге")
-    logger.info(f"     💰 Final cost: {item_total} тенге")
+    # Обработка товаров из документа продажи
+    if altegio_document.get('data', {}).get('state', {}).get('items'):
+        sale_items = altegio_document.get('data', {}).get('state', {}).get('items', [])
+        logger.info(f"🛒 Processing {len(sale_items)} items from goods sale document:")
+        
+        for i, item in enumerate(sale_items):
+            # Извлекаем данные из формата goods sale document
+            item_count = abs(item.get('amount', 1))  # Используем абсолютное значение
+            item_price = item.get('default_cost_per_unit', 0)
+            item_discount_percent = item.get('client_discount_percent', 0)
+            item_total = item.get('cost_to_pay_total', 0)
+            
+            position = {
+                "Count": item_count,
+                "Price": item_price,
+                "PositionName": item.get('title', 'Unknown Item'),
+                "Discount": (item_price * item_count) - item_total,  # Рассчитываем скидку в тенге
+                "Tax": "0",
+                "TaxType": "0", 
+                "TaxPercent": "0"
+            }
+            positions.append(position)
+            total_sum_for_webkassa += item_total
+            
+            logger.info(f"  🛒 Sale Item {i+1}: {item.get('title', 'Unknown')}")
+            logger.info(f"     💵 Price: {item_price} тенге x {item_count} = {item_price * item_count} тенге")
+            logger.info(f"     🎫 Discount: {item_discount_percent}% = {(item_price * item_count) - item_total} тенге")
+            logger.info(f"     💰 Total to pay: {item_total} тенге")
 
-    # Для goods_operations_sale мы не получаем информацию о платежах из Altegio API
-    # Поэтому используем общую сумму и безналичный платеж по умолчанию
-    default_payment = {
-        "Sum": total_sum_for_webkassa,
-        "PaymentType": 1  # По умолчанию безналичный
-    }
-    payments.append(default_payment)
-    logger.info(f"💳 Using default payment: {total_sum_for_webkassa} тенге (Безналичный)")
+    # Обработка платежей из документа продажи
+    if altegio_document.get('data', {}).get('state', {}).get('payment_transactions'):
+        sale_transactions = altegio_document.get('data', {}).get('state', {}).get('payment_transactions', [])
+        logger.info(f"💳 Processing {len(sale_transactions)} payment transactions from goods sale document:")
+        
+        for i, transaction in enumerate(sale_transactions):
+            amount = transaction.get('amount', 0)
+            if amount > 0:
+                account_info = transaction.get('account', {})
+                is_cash = account_info.get('is_cash', True)
+                account_title = account_info.get('title', 'Unknown')
+                
+                # Определяем тип платежа на основе is_cash
+                payment_type = 0 if is_cash else 1  # 0 = наличные, 1 = безналичный
+
+                payment = {
+                    "Sum": amount,
+                    "PaymentType": payment_type
+                }
+                payments.append(payment)
+                
+                payment_type_name = "Наличные" if payment_type == 0 else "Безналичный"
+                logger.info(f"  💳 Payment {i+1}: {amount} тенге ({payment_type_name})")
+                logger.info(f"     🏦 Account: {account_title}")
+
+    # Если платежи не были найдены в документе, используем общую сумму
+    if not payments:
+        default_payment = {
+            "Sum": total_sum_for_webkassa,
+            "PaymentType": 1  # По умолчанию безналичный
+        }
+        payments.append(default_payment)
+        logger.warning(f"⚠️ No payments found in goods sale document, using default payment: {total_sum_for_webkassa} тенге (Безналичный)")
 
     webkassa_data = {
         "CashboxUniqueNumber": os.getenv("WEBKASSA_CASHBOX_ID"),
@@ -956,344 +993,343 @@ async def handle_altegio_webhook(
     db: AsyncSession = Depends(get_db_session)
 ):
     """
-    Обработка webhook от Altegio
-    Поддерживает как одиночные объекты, так и массивы webhook
+    Обработка webhook от Altegio с использованием очереди для предотвращения параллельной обработки
+    """
+    # Запускаем worker если он не запущен
+    ensure_queue_worker_running()
+    
+    # Нормализуем payload к массиву для единообразной обработки
+    if isinstance(payload, list):
+        webhook_list = payload
+    else:
+        webhook_list = [payload]
+    
+    logger.info(f"🎯 Received {len(webhook_list)} webhook(s), adding to processing queue")
+    
+    # Создаем задачи для каждого webhook и добавляем в очередь
+    tasks = []
+    for single_payload in webhook_list:
+        task = WebhookTask(single_payload, request, db)
+        tasks.append(task)
+        await webhook_processing_queue.put(task)
+        logger.info(f"📤 Added webhook {task.task_id} to processing queue")
+    
+    # Ждем завершения всех задач
+    results = []
+    for task in tasks:
+        try:
+            result = await task.result_future
+            results.append(result)
+        except Exception as e:
+            logger.error(f"❌ Task {task.task_id} failed: {e}")
+            results.append({
+                "success": False,
+                "message": f"Processing failed: {str(e)}",
+                "processed_count": 0
+            })
+    
+    # Объединяем результаты
+    total_success = sum(1 for r in results if r.get("success", False))
+    total_processed = sum(r.get("processed_count", 0) for r in results)
+    
+    if total_success > 0:
+        return WebhookResponse(
+            success=True,
+            message=f"Successfully processed {total_success} of {len(webhook_list)} webhook(s) via queue",
+            processed_count=total_processed
+        )
+    else:
+        return WebhookResponse(
+            success=False,
+            message=f"Failed to process {len(webhook_list)} webhook(s)",
+            processed_count=0
+        )
+
+
+async def process_webhook_internal(
+    payload: AltegioWebhookPayload,
+    request: Request,
+    db: AsyncSession
+) -> dict:
+    """
+    Внутренняя функция обработки одного webhook
     """
     try:
-        # Логируем основную информацию о webhook для отладки (без полных данных)
-        body = await request.body()
-        body_size = len(body)
+        logger.info(f"Processing webhook: company_id={payload.company_id}, "
+                   f"resource={payload.resource}, resource_id={payload.resource_id}, "
+                   f"status={payload.status}")
         
-        # Логируем только размер и основную информацию, а не полные данные
-        logger.info(f"🔍 Webhook data received: {body_size} bytes")
+        if not await verify_webhook_signature(request):
+            logger.warning("Invalid webhook signature")
+            raise HTTPException(status_code=401, detail="Invalid webhook signature")
         
-        # Логируем structured информацию о payload
-        if isinstance(payload, list):
-            logger.info(f"📦 Received webhook array with {len(payload)} items")
-            for i, item in enumerate(payload[:3]):  # Показываем только первые 3 элемента
-                logger.info(f"   📋 Item {i+1}: resource_id={item.resource_id}, company_id={item.company_id}, status={item.status}")
-            if len(payload) > 3:
-                logger.info(f"   ... и еще {len(payload) - 3} элементов")
+        # Проверяем условия для обработки
+        comment_text = payload.data.comment or ""
+        has_fch = 'фч' in comment_text.lower() if comment_text else False
+        
+        # Условия для обработки разных типов webhook
+        # ВСЕ типы webhook требуют комментарий с 'фч'!
+        if payload.resource == 'record':
+            # Обычные записи требуют комментарий с 'фч' и полную оплату
+            conditions_met = (
+                payload.data.comment and has_fch and 
+                payload.data.paid_full == 1
+            )
+        elif payload.resource == 'goods_operations_sale':
+            # Продажи товаров тоже требуют комментарий с 'фч'
+            conditions_met = (
+                payload.data.comment and has_fch
+            )
         else:
-            logger.info(f"📦 Received single webhook: resource_id={payload.resource_id}, company_id={payload.company_id}, status={payload.status}")
+            conditions_met = False
         
-        # Нормализуем payload к массиву для единообразной обработки
-        if isinstance(payload, list):
-            webhook_list = payload
-            logger.info(f"📦 Received webhook array with {len(webhook_list)} items")
-        else:
-            webhook_list = [payload]
-            logger.info(f"📦 Received single webhook item, normalized to array")
+        logger.info(f"� Checking processing conditions for webhook {payload.resource_id}:")
+        logger.info(f"   📋 Resource: {payload.resource} (supported: 'record', 'goods_operations_sale') {'✅' if payload.resource in ['record', 'goods_operations_sale'] else '❌'}")
+        logger.info(f"   💬 Comment: '{comment_text}' (must contain 'фч') {'✅' if has_fch else '❌'}")
+        logger.info(f"   � Comment bytes: {comment_text.encode('utf-8') if comment_text else b''}")
+        logger.info(f"   💬 Contains 'фч': {has_fch}")
         
-        processed_records = []
-        failed_records = []
-        skipped_records = []
+        if payload.resource == 'record':
+            logger.info(f"   💰 Paid full: {payload.data.paid_full} (required: 1) {'✅' if payload.data.paid_full == 1 else '❌'}")
+        elif payload.resource == 'goods_operations_sale':
+            logger.info(f"   �️ Goods sale: requires 'фч' comment {'✅' if has_fch else '❌'}")
         
-        for single_payload in webhook_list:
-            logger.info(f"Processing webhook: company_id={single_payload.company_id}, "
-                       f"resource={single_payload.resource}, resource_id={single_payload.resource_id}, "
-                       f"status={single_payload.status}")
-            
-            if not await verify_webhook_signature(request):
-                logger.warning("Invalid webhook signature")
-                raise HTTPException(status_code=401, detail="Invalid webhook signature")
-            
-            # Проверяем условия для обработки
-            comment_text = single_payload.data.comment or ""
-            has_fch = 'фч' in comment_text.lower() if comment_text else False
-            
-            # Условия для обработки разных типов webhook
-            # ВСЕ типы webhook требуют комментарий с 'фч'!
-            if single_payload.resource == 'record':
-                # Обычные записи требуют комментарий с 'фч' и полную оплату
-                conditions_met = (
-                    single_payload.data.comment and has_fch and 
-                    single_payload.data.paid_full == 1
-                )
-            elif single_payload.resource == 'goods_operations_sale':
-                # Продажи товаров тоже требуют комментарий с 'фч'
-                conditions_met = (
-                    single_payload.data.comment and has_fch
-                )
+        logger.info(f"   🎯 Overall result: {'✅ PROCESSING' if conditions_met else '❌ SKIPPING'}")
+        
+        if not conditions_met:
+            logger.info(f"Webhook {payload.resource_id} does not meet the required conditions for processing.")
+            return {
+                "success": True,
+                "message": f"Webhook {payload.resource_id} skipped due to conditions",
+                "processed_count": 0
+            }
+
+        # Проверяем, не был ли уже обработан
+        existing_record = await db.execute(
+            select(WebhookRecord).filter(
+                WebhookRecord.resource_id == payload.resource_id,
+                WebhookRecord.company_id == payload.company_id,
+                WebhookRecord.processed == True
+            )
+        )
+        if existing_record.scalars().first():
+            logger.info(f"✅ Webhook with resource_id {payload.resource_id} already successfully processed, skipping.")
+            return {
+                "success": True,
+                "message": f"Webhook {payload.resource_id} already processed",
+                "processed_count": 0
+            }
+
+        # Остальная логика обработки webhook
+        # Ищем существующую запись или создаем новую
+        webhook_record = await db.execute(
+            select(WebhookRecord).filter(
+                WebhookRecord.resource_id == payload.resource_id,
+                WebhookRecord.company_id == payload.company_id
+            )
+        )
+        webhook_record = webhook_record.scalars().first()
+
+        if webhook_record:
+            # Обновляем существующую запись
+            logger.info(f"🔄 Found existing webhook record (ID: {webhook_record.id}), updating for retry...")
+            webhook_record.status = payload.status
+            webhook_record.client_phone = payload.data.client.phone if payload.data.client else ""
+            webhook_record.client_name = payload.data.client.name if payload.data.client else ""
+            # Обрабатываем datetime
+            if payload.data.datetime:
+                webhook_record.record_date = datetime.fromisoformat(payload.data.datetime.replace(" ", "T").split("+")[0])
+            elif payload.data.create_date:
+                webhook_record.record_date = datetime.fromisoformat(payload.data.create_date.replace(" ", "T").split("+")[0])
             else:
-                conditions_met = False
+                webhook_record.record_date = datetime.utcnow()
+            webhook_record.services_data = json.dumps([s.model_dump() for s in payload.data.services])
+            webhook_record.comment = payload.data.comment
+            webhook_record.raw_data = payload.model_dump()
+            webhook_record.updated_at = datetime.utcnow()
+            webhook_record.processed = False
+            webhook_record.processing_error = None
+            webhook_record.webkassa_status = None
+            webhook_record.webkassa_response = None
+            webhook_record.webkassa_request_id = None
+        else:
+            # Создаем новую запись
+            logger.info(f"📝 Creating new webhook record for resource_id {payload.resource_id}")
+            record_date = datetime.utcnow()
+            if payload.data.datetime:
+                try:
+                    record_date = datetime.fromisoformat(payload.data.datetime.replace(" ", "T").split("+")[0])
+                except (ValueError, AttributeError) as e:
+                    logger.warning(f"Failed to parse datetime '{payload.data.datetime}': {e}, using current time")
+            elif payload.data.create_date:
+                try:
+                    record_date = datetime.fromisoformat(payload.data.create_date.replace(" ", "T").split("+")[0])
+                except (ValueError, AttributeError) as e:
+                    logger.warning(f"Failed to parse create_date '{payload.data.create_date}': {e}, using current time")
             
-            logger.info(f"🔍 Checking processing conditions for webhook {single_payload.resource_id}:")
-            logger.info(f"   📋 Resource: {single_payload.resource} (supported: 'record', 'goods_operations_sale') {'✅' if single_payload.resource in ['record', 'goods_operations_sale'] else '❌'}")
-            logger.info(f"   💬 Comment: '{comment_text}' (must contain 'фч') {'✅' if has_fch else '❌'}")
-            logger.info(f"   💬 Comment bytes: {comment_text.encode('utf-8') if comment_text else b''}")
-            logger.info(f"   💬 Contains 'фч': {has_fch}")
-            
-            if single_payload.resource == 'record':
-                logger.info(f"   💰 Paid full: {single_payload.data.paid_full} (required: 1) {'✅' if single_payload.data.paid_full == 1 else '❌'}")
-            elif single_payload.resource == 'goods_operations_sale':
-                logger.info(f"   🛍️ Goods sale: requires 'фч' comment {'✅' if has_fch else '❌'}")
-            
-            logger.info(f"   🎯 Overall result: {'✅ PROCESSING' if conditions_met else '❌ SKIPPING'}")
-            
-            if not conditions_met:
-                logger.info(f"Webhook {single_payload.resource_id} does not meet the required conditions for processing.")
-                skipped_records.append(single_payload.resource_id)
-                continue  # Пропускаем этот webhook, но продолжаем обработку остальных
-
-            # Проверяем, не был ли уже обработан
-            existing_record = await db.execute(
-                select(WebhookRecord).filter(
-                    WebhookRecord.resource_id == single_payload.resource_id,
-                    WebhookRecord.company_id == single_payload.company_id,
-                    WebhookRecord.processed == True
-                )
+            webhook_record = WebhookRecord(
+                company_id=payload.company_id,
+                resource=payload.resource,
+                resource_id=payload.resource_id,
+                status=payload.status,
+                client_phone=payload.data.client.phone if payload.data.client else "",
+                client_name=payload.data.client.name if payload.data.client else "",
+                record_date=record_date,
+                services_data=json.dumps([s.model_dump() for s in payload.data.services]),
+                comment=payload.data.comment,
+                raw_data=payload.model_dump()
             )
-            if existing_record.scalars().first():
-                logger.info(f"✅ Webhook with resource_id {single_payload.resource_id} already successfully processed, skipping.")
-                skipped_records.append(single_payload.resource_id)
-                continue  # Пропускаем уже обработанный webhook
-
-            # Ищем существующую запись или создаем новую
-            webhook_record = await db.execute(
-                select(WebhookRecord).filter(
-                    WebhookRecord.resource_id == single_payload.resource_id,
-                    WebhookRecord.company_id == single_payload.company_id
-                )
-            )
-            webhook_record = webhook_record.scalars().first()
-
-            if webhook_record:
-                # Обновляем существующую запись (возможно, предыдущая попытка была неуспешной)
-                logger.info(f"🔄 Found existing webhook record (ID: {webhook_record.id}), updating for retry...")
-                logger.info(f"   📋 Previous status: processed={webhook_record.processed}, webkassa_status={webhook_record.webkassa_status}")
-                if webhook_record.processing_error:
-                    logger.info(f"   ⚠️ Previous error: {webhook_record.processing_error}")
-                
-                webhook_record.status = single_payload.status
-                webhook_record.client_phone = single_payload.data.client.phone if single_payload.data.client else ""
-                webhook_record.client_name = single_payload.data.client.name if single_payload.data.client else ""
-                # Обрабатываем случай, когда datetime может отсутствовать и разные форматы дат
-                if single_payload.data.datetime:
-                    webhook_record.record_date = datetime.fromisoformat(single_payload.data.datetime.replace(" ", "T").split("+")[0])
-                elif single_payload.data.create_date:
-                    # Для goods_operations_sale используем create_date
-                    webhook_record.record_date = datetime.fromisoformat(single_payload.data.create_date.replace(" ", "T").split("+")[0])
-                else:
-                    webhook_record.record_date = datetime.utcnow()  # Используем текущее время как fallback
-                webhook_record.services_data = json.dumps([s.model_dump() for s in single_payload.data.services])
-                webhook_record.comment = single_payload.data.comment
-                webhook_record.raw_data = single_payload.model_dump()
-                webhook_record.updated_at = datetime.utcnow()
+            db.add(webhook_record)
+        
+        await db.commit()
+        await db.refresh(webhook_record)
+        
+        logger.info(f"Webhook saved/updated in database with ID: {webhook_record.id}")
+        
+        # Теперь обрабатываем фискализацию
+        try:
+            # Получаем document_id
+            altegio_document_id = None
+            if payload.resource == "goods_operations_sale":
+                altegio_document_id = payload.data.document_id
+            else:
+                if payload.data.documents:
+                    altegio_document_id = payload.data.documents[0].id
+            
+            if not altegio_document_id:
+                logger.warning(f"No document ID found in webhook for resource_id {payload.resource_id}")
+                webhook_record.processing_error = "No document ID found in webhook"
                 webhook_record.processed = False
-                webhook_record.processing_error = None
-                webhook_record.webkassa_status = None
-                webhook_record.webkassa_response = None
-                webhook_record.webkassa_request_id = None
-            else:
-                # Создаем новую запись
-                logger.info(f"📝 Creating new webhook record for resource_id {single_payload.resource_id}")
-                # Обрабатываем случай, когда datetime может отсутствовать и разные форматы дат
-                record_date = datetime.utcnow()  # fallback
-                if single_payload.data.datetime:
-                    try:
-                        record_date = datetime.fromisoformat(single_payload.data.datetime.replace(" ", "T").split("+")[0])
-                    except (ValueError, AttributeError) as e:
-                        logger.warning(f"Failed to parse datetime '{single_payload.data.datetime}': {e}, using current time")
-                        record_date = datetime.utcnow()
-                elif single_payload.data.create_date:
-                    # Для goods_operations_sale используем create_date
-                    try:
-                        record_date = datetime.fromisoformat(single_payload.data.create_date.replace(" ", "T").split("+")[0])
-                    except (ValueError, AttributeError) as e:
-                        logger.warning(f"Failed to parse create_date '{single_payload.data.create_date}': {e}, using current time")
-                        record_date = datetime.utcnow()
-                
-                webhook_record = WebhookRecord(
-                    company_id=single_payload.company_id,
-                    resource=single_payload.resource,
-                    resource_id=single_payload.resource_id,
-                    status=single_payload.status,
-                    client_phone=single_payload.data.client.phone if single_payload.data.client else "",
-                    client_name=single_payload.data.client.name if single_payload.data.client else "",
-                    record_date=record_date,
-                    services_data=json.dumps([s.model_dump() for s in single_payload.data.services]),
-                    comment=single_payload.data.comment,
-                    raw_data=single_payload.model_dump()
-                )
-                db.add(webhook_record)
-            
-            await db.commit()
-            await db.refresh(webhook_record)
-            
-            logger.info(f"Webhook saved/updated in database with ID: {webhook_record.id}")
-            
-            try:
-                # Обработка фискализации
-                altegio_document_id = None
-                
-                # Извлекаем document_id в зависимости от типа webhook
-                if single_payload.resource == "goods_operations_sale":
-                    # Для goods_operations_sale document_id находится прямо в data
-                    altegio_document_id = single_payload.data.document_id
-                else:
-                    # Для record document_id находится в массиве documents
-                    if single_payload.data.documents:
-                        altegio_document_id = single_payload.data.documents[0].id
-                
-                if not altegio_document_id:
-                    logger.warning(f"No document ID found in webhook for resource_id {single_payload.resource_id}")
-                    webhook_record.processing_error = "No document ID found in webhook"
-                    webhook_record.processed = False
-                    failed_records.append(webhook_record.id)  # Добавляем в список неуспешных
-                    await db.commit()
-                    continue  # Пропускаем этот webhook
-
-                # Попытка получить документ Altegio (только для record webhook)
-                altegio_document = None
-                
-                if single_payload.resource == "goods_operations_sale":
-                    # Для goods_operations_sale все данные уже в webhook, документ не нужен
-                    logger.info(f"🛍️ Goods sale webhook - using data directly from webhook, skipping Altegio API call")
-                    altegio_document = {"data": []}  # Пустой документ для совместимости
-                else:
-                    # Для record webhook получаем документ из Altegio API
-                    try:
-                        logger.info(f"Requesting Altegio document: company_id={single_payload.company_id}, document_id={altegio_document_id}, resource={single_payload.resource}")
-                        logger.info(f"📋 Using transactions document API for resource_id {single_payload.resource_id}")
-                        altegio_document = await get_altegio_document(single_payload.company_id, altegio_document_id)
-                        logger.info(f"✅ Successfully fetched Altegio document for resource_id {single_payload.resource_id}")
-                        logger.info(f"📄 Altegio document content: {json.dumps(altegio_document, indent=2, ensure_ascii=False)}")
-                    except HTTPException as altegio_error:
-                        logger.warning(f"❌ Failed to fetch Altegio document for resource_id {single_payload.resource_id}: {altegio_error.detail}")
-                        # Продолжаем обработку без документа Altegio
-                        altegio_document = {"data": []}
-
-                # Проверяем, есть ли данные для обработки
-                if single_payload.resource != "goods_operations_sale" and not altegio_document.get("data"):
-                    logger.warning(f"No data found in Altegio document for resource_id {single_payload.resource_id}, skipping fiscalization")
-                    webhook_record.processing_error = "No data found in Altegio document"
-                    webhook_record.processed = False
-                    failed_records.append(webhook_record.id)  # Добавляем в список неуспешных
-                    await db.commit()
-                    continue  # Пропускаем этот webhook
-
-                # Определяем тип ресурса и вызываем соответствующую функцию подготовки данных
-                if single_payload.resource == "goods_operations_sale":
-                    webkassa_data = await prepare_webkassa_data_for_goods_sale(single_payload, altegio_document, db)
-                else:
-                    webkassa_data = await prepare_webkassa_data(single_payload, altegio_document, db)
-                
-                logger.info(f"💰 Prepared Webkassa fiscalization data:")
-                logger.info(f"📋 Positions: {json.dumps(webkassa_data.get('Positions', []), indent=2, ensure_ascii=False)}")
-                logger.info(f"💳 Payments: {json.dumps(webkassa_data.get('Payments', []), indent=2, ensure_ascii=False)}")
-                logger.info(f"🧾 Full Webkassa request: {json.dumps(webkassa_data, indent=2, ensure_ascii=False)}")
-
-                # Подготавливаем информацию о webhook для логирования
-                webhook_info = {
-                    "resource_id": single_payload.resource_id,
-                    "company_id": single_payload.company_id,
-                    "client_name": single_payload.data.client.name if single_payload.data.client else "Unknown",
-                    "client_phone": single_payload.data.client.phone if single_payload.data.client else "Unknown",
-                    "record_date": single_payload.data.datetime if single_payload.data.datetime else (single_payload.data.create_date if single_payload.data.create_date else "Unknown"),
-                    "comment": single_payload.data.comment,
-                    "status": single_payload.status,
-                    "resource": single_payload.resource,
-                    "full_webhook": single_payload.model_dump()  # Полная информация о webhook
+                await db.commit()
+                return {
+                    "success": False,
+                    "message": f"No document ID found for webhook {payload.resource_id}",
+                    "processed_count": 0
                 }
 
-                webkassa_response = await send_to_webkassa_with_auto_refresh(db, webkassa_data, webhook_info)
+            # Получаем документ Altegio
+            altegio_document = None
+            try:
+                logger.info(f"Requesting Altegio document: company_id={payload.company_id}, document_id={altegio_document_id}, resource={payload.resource}")
                 
-                is_success = webkassa_response.get("success", False)
-                if is_success:
-                    logger.info(f"✅ SUCCESS: Webkassa fiscalization completed")
-                    
-                    # Помечаем как обработанный только при успешной фискализации
-                    webhook_record.processed = True
-                    webhook_record.processed_at = datetime.utcnow()
-                    webhook_record.webkassa_status = "success"
-                    webhook_record.processing_error = None  # Очищаем ошибки при успехе
-                    processed_records.append(webhook_record.id)  # Добавляем в список успешно обработанных
+                if payload.resource == "goods_operations_sale":
+                    logger.info(f"🛍️ Using goods sale document API for resource_id {payload.resource_id}")
+                    altegio_document = await get_altegio_sale_document(payload.company_id, altegio_document_id)
                 else:
-                    logger.info(f"❌ FAILED: Webkassa fiscalization failed")
-                    
-                    # При неудаче НЕ помечаем как обработанный, чтобы можно было повторить
-                    webhook_record.processed = False
-                    webhook_record.processed_at = None
-                    webhook_record.webkassa_status = "failed"
-                    
-                    # Сохраняем детали ошибки для анализа
-                    error_details = []
-                    if "errors" in webkassa_response:
-                        error_details.extend(webkassa_response["errors"])
-                    if "error" in webkassa_response:
-                        error_details.append(webkassa_response["error"])
-                    webhook_record.processing_error = "; ".join(error_details) if error_details else "Unknown Webkassa error"
-                    failed_records.append(webhook_record.id)  # Добавляем в список неуспешных
+                    logger.info(f"📋 Using transactions document API for resource_id {payload.resource_id}")
+                    altegio_document = await get_altegio_document(payload.company_id, altegio_document_id)
+                
+                logger.info(f"✅ Successfully fetched Altegio document for resource_id {payload.resource_id}")
+            except HTTPException as altegio_error:
+                logger.warning(f"❌ Failed to fetch Altegio document for resource_id {payload.resource_id}: {altegio_error.detail}")
+                altegio_document = {"data": []}
 
-                # Общие поля, которые записываются в любом случае для анализа
-                webhook_record.webkassa_response = json.dumps(webkassa_response)
-                external_check_number = webkassa_data.get("ExternalCheckNumber")
-                webhook_record.webkassa_request_id = str(external_check_number) if external_check_number is not None else None
-                await db.commit()
-                
-            except Exception as e:
-                logger.error(f"Error processing webhook {single_payload.resource_id}: {str(e)}", exc_info=True)
-                webhook_record.processing_error = str(e)
+            # Проверяем данные
+            if not altegio_document.get("data"):
+                logger.warning(f"No data found in Altegio document for resource_id {payload.resource_id}")
+                webhook_record.processing_error = "No data found in Altegio document"
                 webhook_record.processed = False
-                failed_records.append(webhook_record.id)  # Добавляем в список неуспешных
                 await db.commit()
-                continue  # Продолжаем обработку других webhook
-        
-        # Формируем детальную статистику обработки
-        total_received = len(webhook_list)
-        successful_count = len(processed_records)
-        failed_count = len(failed_records)
-        skipped_count = len(skipped_records)
-        
-        logger.info(f"📊 Webhook processing summary:")
-        logger.info(f"   📥 Total received: {total_received}")
-        logger.info(f"   ✅ Successfully processed: {successful_count}")
-        logger.info(f"   ❌ Failed to process: {failed_count}")
-        logger.info(f"   ⏭️ Skipped: {skipped_count}")
-        
-        if successful_count > 0:
-            success_message = f"Successfully processed {successful_count} of {total_received} webhook(s)"
-            if failed_count > 0:
-                success_message += f" ({failed_count} failed, will retry)"
-            if skipped_count > 0:
-                success_message += f" ({skipped_count} skipped)"
-                
-            return WebhookResponse(
-                success=True,
-                message=success_message,
-                record_id=processed_records[0] if processed_records else None,
-                record_ids=processed_records,
-                processed_count=successful_count
-            )
-        else:
-            if failed_count > 0:
-                failure_message = f"Failed to process {failed_count} webhook(s)"
-                if skipped_count > 0:
-                    failure_message += f", {skipped_count} skipped"
-                failure_message += ". Failed webhooks will be retried."
-                
-                return WebhookResponse(
-                    success=False,  # Указываем неуспех, если ни один не обработался
-                    message=failure_message,
-                    processed_count=0
-                )
+                return {
+                    "success": False,
+                    "message": f"No data in Altegio document for webhook {payload.resource_id}",
+                    "processed_count": 0
+                }
+
+            # Подготавливаем данные для Webkassa
+            if payload.resource == "goods_operations_sale":
+                webkassa_data = await prepare_webkassa_data_for_goods_sale(payload, altegio_document, db)
             else:
-                skip_message = f"Received {total_received} webhook(s), but none met processing conditions"
-                if skipped_count > 0:
-                    skip_message += f" ({skipped_count} skipped due to conditions, 0 due to already processed)"
+                webkassa_data = await prepare_webkassa_data(payload, altegio_document, db)
+            
+            logger.info(f"💰 Prepared Webkassa fiscalization data for {payload.resource_id}")
+
+            # Подготавливаем информацию о webhook для логирования
+            webhook_info = {
+                "resource_id": payload.resource_id,
+                "company_id": payload.company_id,
+                "client_name": payload.data.client.name if payload.data.client else "Unknown",
+                "client_phone": payload.data.client.phone if payload.data.client else "Unknown",
+                "record_date": payload.data.datetime if payload.data.datetime else (payload.data.create_date if payload.data.create_date else "Unknown"),
+                "comment": payload.data.comment,
+                "status": payload.status,
+                "resource": payload.resource,
+                "full_webhook": payload.model_dump()
+            }
+
+            webkassa_response = await send_to_webkassa_with_auto_refresh(db, webkassa_data, webhook_info)
+            
+            is_success = webkassa_response.get("success", False)
+            if is_success:
+                logger.info(f"✅ SUCCESS: Webkassa fiscalization completed for {payload.resource_id}")
+                webhook_record.processed = True
+                webhook_record.processed_at = datetime.utcnow()
+                webhook_record.webkassa_status = "success"
+                webhook_record.processing_error = None
+                processed_count = 1
+            else:
+                logger.info(f"❌ FAILED: Webkassa fiscalization failed for {payload.resource_id}")
+                webhook_record.processed = False
+                webhook_record.processed_at = None
+                webhook_record.webkassa_status = "failed"
                 
-                return WebhookResponse(
-                    success=True,
-                    message=skip_message,
-                    processed_count=0
-                )
+                error_details = []
+                if "errors" in webkassa_response:
+                    error_details.extend(webkassa_response["errors"])
+                if "error" in webkassa_response:
+                    error_details.append(webkassa_response["error"])
+                webhook_record.processing_error = "; ".join(error_details) if error_details else "Unknown Webkassa error"
+                processed_count = 0
+
+            # Сохраняем результат
+            webhook_record.webkassa_response = json.dumps(webkassa_response)
+            external_check_number = webkassa_data.get("ExternalCheckNumber")
+            webhook_record.webkassa_request_id = str(external_check_number) if external_check_number is not None else None
+            await db.commit()
+            
+            return {
+                "success": is_success,
+                "message": f"Webhook {payload.resource_id} processed {'successfully' if is_success else 'with errors'}",
+                "processed_count": processed_count,
+                "record_id": webhook_record.id
+            }
+            
+        except Exception as e:
+            logger.error(f"Error processing webhook {payload.resource_id}: {str(e)}", exc_info=True)
+            webhook_record.processing_error = str(e)
+            webhook_record.processed = False
+            await db.commit()
+            return {
+                "success": False,
+                "message": f"Processing error for webhook {payload.resource_id}: {str(e)}",
+                "processed_count": 0
+            }
         
     except HTTPException as e:
         raise e
     except Exception as e:
-        logger.error(f"Error processing webhook batch: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"Critical error in webhook processing: {str(e)}", exc_info=True)
+        return {
+            "success": False,
+            "message": f"Critical processing error: {str(e)}",
+            "processed_count": 0
+        }
+
+
+# Вспомогательные функции
+async def send_telegram_notification(message: str, error: bool = False):
+    """Заглушка для отправки уведомлений в Telegram"""
+    # TODO: Реализовать отправку уведомлений в Telegram
+    if error:
+        logger.error(f"TELEGRAM ERROR: {message}")
+    else:
+        logger.info(f"TELEGRAM INFO: {message}")
+
+async def close_webkassa_shift(db: AsyncSession, api_token: str, webhook_info: dict = None):
+    """Заглушка для закрытия смены WebKassa"""
+    # TODO: Реализовать закрытие смены WebKassa
+    logger.info("WebKassa shift close requested")
+    return {"success": True, "message": "Shift close functionality not implemented yet"}
 
 
 @router.get("/webhook/status/{resource_id}", response_model=WebhookResponse)
@@ -1324,7 +1360,7 @@ async def get_webhook_status(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-async def close_webkassa_shift(db: AsyncSession, api_token: str, webhook_info: dict = None) -> dict:
+async def close_webkassa_shift(db: AsyncSession, api_token: str, webhook_info: dict = None):
     """
     Закрывает смену в Webkassa через API.
     
@@ -1912,6 +1948,46 @@ async def get_webhook_stats(db: AsyncSession = Depends(get_db_session)):
     except Exception as e:
         logger.error(f"Error getting webhook stats: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+async def webhook_queue_worker():
+    """
+    Worker для обработки webhook из очереди последовательно
+    """
+    logger.info("🚀 Starting webhook queue worker...")
+    
+    while True:
+        try:
+            # Получаем задачу из очереди
+            task: WebhookTask = await webhook_processing_queue.get()
+            logger.info(f"📋 Processing webhook task: {task.task_id}")
+            
+            try:
+                # Обрабатываем webhook с семафором для гарантии последовательности
+                async with webhook_processing_semaphore:
+                    result = await process_webhook_internal(task.payload, task.request, task.db_session)
+                    task.result_future.set_result(result)
+                    logger.info(f"✅ Completed webhook task: {task.task_id}")
+            except Exception as e:
+                logger.error(f"❌ Failed webhook task {task.task_id}: {e}", exc_info=True)
+                task.result_future.set_exception(e)
+            finally:
+                # Помечаем задачу как выполненную
+                webhook_processing_queue.task_done()
+                
+        except Exception as e:
+            logger.error(f"❌ Error in webhook queue worker: {e}", exc_info=True)
+            await asyncio.sleep(1)  # Небольшая пауза при ошибке
+
+# Запускаем worker в фоновом режиме
+_queue_worker_task = None
+
+def ensure_queue_worker_running():
+    """Гарантирует, что worker очереди запущен"""
+    global _queue_worker_task
+    if _queue_worker_task is None or _queue_worker_task.done():
+        _queue_worker_task = asyncio.create_task(webhook_queue_worker())
+        logger.info("🔄 Started webhook queue worker")
 
 
 
