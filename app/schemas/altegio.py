@@ -2,7 +2,7 @@
 Pydantic схемы для валидации данных от Altegio webhook
 """
 from datetime import datetime
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Union
 from pydantic import BaseModel, Field
 
 
@@ -82,58 +82,120 @@ class AltegioDocument(BaseModel):
     is_sale_bill_printed: bool
 
 
+# Дополнительные модели для goods_operations_sale
+class AltegioGood(BaseModel):
+    """Модель товара из Altegio"""
+    id: int
+    title: str
+
+class AltegioUnit(BaseModel):
+    """Модель единицы измерения из Altegio"""
+    id: int
+    title: str
+    short_title: str
+
+class AltegioStorage(BaseModel):
+    """Модель склада из Altegio"""
+    id: int
+    title: str
+
+class AltegioMaster(BaseModel):
+    """Модель мастера из Altegio"""
+    id: int
+    title: str
+
+class AltegioSimpleClient(BaseModel):
+    """Упрощенная модель клиента для goods_operations_sale"""
+    id: int
+    name: str
+    phone: str
+
+
 class AltegioRecordData(BaseModel):
-    """Данные записи из Altegio"""
-    id: int = Field(..., description="ID записи")
-    company_id: int = Field(..., description="ID компании")
-    staff_id: int = Field(..., description="ID сотрудника")
-    clients_count: int = Field(..., description="Количество клиентов")
-    date: str = Field(..., description="Дата и время записи")
-    comment: Optional[str] = Field(None, description="Комментарий к записи")
-    online: bool = Field(..., description="Запись сделана онлайн")
-    visit_id: int = Field(..., description="ID визита")
-    visit_attendance: int = Field(..., description="Посещаемость визита")
-    attendance: int = Field(..., description="Посещаемость")
-    confirmed: int = Field(..., description="Подтверждено")
-    seance_length: int = Field(..., description="Длительность сеанса в секундах")
-    length: int = Field(..., description="Длительность в секундах")
-    sms_before: int = Field(..., description="SMS до")
-    sms_now: int = Field(..., description="SMS сейчас")
-    sms_now_text: str = Field("", description="Текст SMS сейчас")  # Добавляем значение по умолчанию
-    email_now: int = Field(..., description="Email сейчас")
-    notified: int = Field(..., description="Уведомлено")
-    master_request: int = Field(..., description="Запрос мастера")
-    api_id: str = Field(..., description="API ID")
-    from_url: str = Field("", description="URL, с которого сделана запись")  # Добавляем значение по умолчанию
-    review_requested: int = Field(..., description="Запрошен отзыв")
-    created_user_id: int = Field(..., description="ID пользователя, создавшего запись")
-    deleted: bool = Field(..., description="Удалено")
-    paid_full: int = Field(..., description="Оплачено полностью")
-    prepaid: bool = Field(..., description="Предоплачено")
-    prepaid_confirmed: bool = Field(..., description="Предоплата подтверждена")
-    is_update_blocked: bool = Field(..., description="Обновление заблокировано")
-    activity_id: int = Field(..., description="ID активности")
-    bookform_id: int = Field(..., description="ID формы бронирования")
-    record_from: str = Field("", description="Откуда сделана запись")  # Добавляем значение по умолчанию
-    is_mobile: int = Field(..., description="Сделано с мобильного")
-    services: List[AltegioService] = Field(..., description="Список услуг")
-    staff: AltegioStaff = Field(..., description="Данные сотрудника")
-    goods_transactions: List[Any] = Field(default_factory=list, description="Транзакции товаров")  # Значение по умолчанию
+    """
+    Универсальные данные из Altegio webhook.
+    Поддерживает как record, так и goods_operations_sale форматы.
+    """
+    id: int = Field(..., description="ID записи/операции")
+    
+    # Общие поля
+    comment: Optional[str] = Field(None, description="Комментарий")
+    
+    # Поля для record webhook
+    company_id: Optional[int] = Field(None, description="ID компании (для record)")
+    staff_id: Optional[int] = Field(None, description="ID сотрудника (для record)")
+    clients_count: Optional[int] = Field(None, description="Количество клиентов")
+    date: Optional[str] = Field(None, description="Дата и время записи")
+    online: Optional[bool] = Field(None, description="Запись сделана онлайн")
+    visit_id: Optional[int] = Field(None, description="ID визита")
+    visit_attendance: Optional[int] = Field(None, description="Посещаемость визита")
+    attendance: Optional[int] = Field(None, description="Посещаемость")
+    confirmed: Optional[int] = Field(None, description="Подтверждено")
+    seance_length: Optional[int] = Field(None, description="Длительность сеанса в секундах")
+    length: Optional[int] = Field(None, description="Длительность в секундах")
+    sms_before: Optional[int] = Field(None, description="SMS до")
+    sms_now: Optional[int] = Field(None, description="SMS сейчас")
+    sms_now_text: Optional[str] = Field("", description="Текст SMS сейчас")
+    email_now: Optional[int] = Field(None, description="Email сейчас")
+    notified: Optional[int] = Field(None, description="Уведомлено")
+    master_request: Optional[int] = Field(None, description="Запрос мастера")
+    api_id: Optional[str] = Field(None, description="API ID")
+    from_url: Optional[str] = Field("", description="URL, с которого сделана запись")
+    review_requested: Optional[int] = Field(None, description="Запрошен отзыв")
+    created_user_id: Optional[int] = Field(None, description="ID пользователя, создавшего запись")
+    deleted: Optional[bool] = Field(None, description="Удалено")
+    paid_full: Optional[int] = Field(None, description="Оплачено полностью")
+    prepaid: Optional[bool] = Field(None, description="Предоплачено")
+    prepaid_confirmed: Optional[bool] = Field(None, description="Предоплата подтверждена")
+    is_update_blocked: Optional[bool] = Field(None, description="Обновление заблокировано")
+    activity_id: Optional[int] = Field(None, description="ID активности")
+    bookform_id: Optional[int] = Field(None, description="ID формы бронирования")
+    record_from: Optional[str] = Field("", description="Откуда сделана запись")
+    is_mobile: Optional[int] = Field(None, description="Сделано с мобильного")
+    services: List[AltegioService] = Field(default_factory=list, description="Список услуг (для record)")
+    staff: Optional[AltegioStaff] = Field(None, description="Данные сотрудника (для record)")
+    goods_transactions: List[Any] = Field(default_factory=list, description="Транзакции товаров")
     sms_remain_hours: Optional[int] = Field(None, description="Оставшиеся часы для SMS")
     email_remain_hours: Optional[int] = Field(None, description="Оставшиеся часы для Email")
     comer: Optional[Any] = Field(None, description="Пришедший")
     comer_person_info: Optional[Any] = Field(None, description="Информация о пришедшем")
-    client: Optional[AltegioClient] = Field(None, description="Данные клиента")
-    datetime: str = Field(..., description="Дата и время записи с часовым поясом")
-    create_date: str = Field(..., description="Дата создания записи с часовым поясом")
-    last_change_date: str = Field(..., description="Дата последнего изменения записи с часовым поясом")
-    custom_fields: List[Any] = Field(default_factory=list, description="Пользовательские поля")  # Значение по умолчанию
-    custom_color: str = Field("", description="Пользовательский цвет")  # Добавляем значение по умолчанию
-    custom_font_color: str = Field("", description="Пользовательский цвет шрифта")  # Добавляем значение по умолчанию
-    record_labels: List[Any] = Field(default_factory=list, description="Метки записи")  # Значение по умолчанию
-    documents: List[AltegioDocument] = Field(default_factory=list, description="Документы")  # Значение по умолчанию
-    short_link: str = Field(..., description="Короткая ссылка")
-    composite: List[Any] = Field(default_factory=list, description="Композит")  # Значение по умолчанию
+    datetime: Optional[str] = Field(None, description="Дата и время записи с часовым поясом (для record)")
+    custom_fields: List[Any] = Field(default_factory=list, description="Пользовательские поля")
+    custom_color: str = Field("", description="Пользовательский цвет")
+    custom_font_color: str = Field("", description="Пользовательский цвет шрифта")
+    record_labels: List[Any] = Field(default_factory=list, description="Метки записи")
+    documents: List[AltegioDocument] = Field(default_factory=list, description="Документы")
+    short_link: Optional[str] = Field(None, description="Короткая ссылка")
+    composite: List[Any] = Field(default_factory=list, description="Композит")
+    
+    # Поля для goods_operations_sale webhook
+    document_id: Optional[int] = Field(None, description="ID документа (для goods_operations_sale)")
+    type_id: Optional[int] = Field(None, description="Тип операции")
+    type: Optional[str] = Field(None, description="Тип операции (название)")
+    operation_unit_type: Optional[int] = Field(None, description="Тип единицы операции")
+    amount: Optional[int] = Field(None, description="Количество (может быть отрицательным)")
+    create_date: Optional[str] = Field(None, description="Дата создания (для goods_operations_sale)")
+    last_change_date: Optional[str] = Field(None, description="Дата последнего изменения")
+    cost_per_unit: Optional[int] = Field(None, description="Стоимость за единицу")
+    cost: Optional[int] = Field(None, description="Общая стоимость")
+    discount: Optional[int] = Field(None, description="Скидка")
+    record_id: Optional[int] = Field(None, description="ID записи")
+    loyalty_abonement_id: Optional[int] = Field(None, description="ID абонемента лояльности")
+    loyalty_certificate_id: Optional[int] = Field(None, description="ID сертификата лояльности")
+    
+    # Объекты для goods_operations_sale
+    good: Optional[AltegioGood] = Field(None, description="Товар (для goods_operations_sale)")
+    unit: Optional[AltegioUnit] = Field(None, description="Единица измерения (для goods_operations_sale)")
+    storage: Optional[AltegioStorage] = Field(None, description="Склад (для goods_operations_sale)")
+    master: Optional[AltegioMaster] = Field(None, description="Мастер (для goods_operations_sale)")
+    service: List[Any] = Field(default_factory=list, description="Услуги (для goods_operations_sale)")
+    supplier: List[Any] = Field(default_factory=list, description="Поставщики (для goods_operations_sale)")
+    
+    # Клиент - может быть разного формата
+    client: Optional[Union[AltegioClient, AltegioSimpleClient]] = Field(None, description="Данные клиента")
+    
+    class Config:
+        extra = "allow"  # Разрешаем дополнительные поля, которые не описаны в схеме
 
 
 class AltegioWebhookPayload(BaseModel):

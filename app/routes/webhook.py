@@ -494,7 +494,7 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
 async def prepare_webkassa_data_for_goods_sale(payload: AltegioWebhookPayload, altegio_document: Dict[str, Any], db: AsyncSession, webkassa_token: str = None) -> Dict[str, Any]:
     """
     Преобразует данные из Altegio goods_operations_sale webhook в формат, ожидаемый Webkassa.
-    Специальная обработка для продаж товаров с их особым форматом транзакций.
+    Специальная обработка для продаж товаров - данные берутся из самого webhook.
     """
     # Получаем токен из базы данных, если не передан
     if not webkassa_token:
@@ -537,68 +537,44 @@ async def prepare_webkassa_data_for_goods_sale(payload: AltegioWebhookPayload, a
     payments = []
     total_sum_for_webkassa = 0
 
-    # Обработка товаров из goods sale document
-    if altegio_document.get('data', {}).get('state', {}).get('items'):
-        sale_items = altegio_document.get('data', {}).get('state', {}).get('items', [])
-        logger.info(f"🛒 Processing {len(sale_items)} items from goods sale document:")
-        
-        for i, item in enumerate(sale_items):
-            # Извлекаем данные из формата goods sale
-            item_count = item.get('amount', 1)
-            item_price = item.get('default_cost_per_unit', 0)
-            item_discount_percent = item.get('client_discount_percent', 0)
-            item_total = item.get('cost_to_pay_total', 0)
-            
-            position = {
-                "Count": item_count,
-                "Price": item_price,
-                "PositionName": item.get('title', 'Unknown Item'),
-                "Discount": (item_price * item_count) - item_total,  # Рассчитываем скидку
-                "Tax": "0",
-                "TaxType": "0", 
-                "TaxPercent": "0"
-            }
-            positions.append(position)
-            total_sum_for_webkassa += item_total
-            
-            logger.info(f"  🛒 Sale Item {i+1}: {item.get('title', 'Unknown')}")
-            logger.info(f"     💵 Price: {item_price} тенге x {item_count} = {item_price * item_count} тенге")
-            logger.info(f"     🎫 Discount: {item_discount_percent}% = {(item_price * item_count) - item_total} тенге")
-            logger.info(f"     💰 Total to pay: {item_total} тенге")
+    # Для goods_operations_sale данные товара находятся прямо в webhook
+    # Создаем позицию из данных webhook
+    item_count = abs(payload.data.amount) if payload.data.amount else 1  # Используем абсолютное значение
+    item_price = payload.data.cost_per_unit if payload.data.cost_per_unit else 0
+    item_discount = payload.data.discount if payload.data.discount else 0
+    item_cost = payload.data.cost if payload.data.cost else 0
+    
+    # Рассчитываем итоговую стоимость позиции
+    item_total = item_cost  # Используем уже рассчитанную стоимость из webhook
+    
+    # Название товара
+    item_title = payload.data.good.title if payload.data.good else "Unknown Item"
+    
+    position = {
+        "Count": item_count,
+        "Price": item_price,
+        "PositionName": item_title,
+        "Discount": item_discount,  # Скидка в тенге
+        "Tax": "0",
+        "TaxType": "0", 
+        "TaxPercent": "0"
+    }
+    positions.append(position)
+    total_sum_for_webkassa = item_total
+    
+    logger.info(f"  🛒 Goods Sale Item: {item_title}")
+    logger.info(f"     💵 Price: {item_price} тенге x {item_count} = {item_price * item_count} тенге")
+    logger.info(f"     🎫 Discount: {item_discount} тенге")
+    logger.info(f"     💰 Final cost: {item_total} тенге")
 
-    # Обработка платежей из goods sale document
-    if altegio_document.get('data', {}).get('state', {}).get('payment_transactions'):
-        sale_transactions = altegio_document.get('data', {}).get('state', {}).get('payment_transactions', [])
-        logger.info(f"💳 Processing {len(sale_transactions)} payment transactions from goods sale document:")
-        
-        for i, transaction in enumerate(sale_transactions):
-            amount = transaction.get('amount', 0)
-            if amount > 0:
-                account_info = transaction.get('account', {})
-                is_cash = account_info.get('is_cash', True)
-                account_title = account_info.get('title', 'Unknown')
-                
-                # Определяем тип платежа на основе is_cash
-                payment_type = 0 if is_cash else 1  # 0 = наличные, 1 = безналичный
-
-                payment = {
-                    "Sum": amount,
-                    "PaymentType": payment_type
-                }
-                payments.append(payment)
-                
-                payment_type_name = "Наличные" if payment_type == 0 else "Безналичный"
-                logger.info(f"  💳 Payment {i+1}: {amount} тенге ({payment_type_name})")
-                logger.info(f"     🏦 Account: {account_title}")
-
-    # Если платежи не были найдены в документе, используем общую сумму
-    if not payments:
-        default_payment = {
-            "Sum": total_sum_for_webkassa,
-            "PaymentType": 1  # По умолчанию безналичный
-        }
-        payments.append(default_payment)
-        logger.warning(f"⚠️ No payments found in goods sale document, using default payment: {total_sum_for_webkassa} тенге (Безналичный)")
+    # Для goods_operations_sale мы не получаем информацию о платежах из Altegio API
+    # Поэтому используем общую сумму и безналичный платеж по умолчанию
+    default_payment = {
+        "Sum": total_sum_for_webkassa,
+        "PaymentType": 1  # По умолчанию безналичный
+    }
+    payments.append(default_payment)
+    logger.info(f"💳 Using default payment: {total_sum_for_webkassa} тенге (Безналичный)")
 
     webkassa_data = {
         "CashboxUniqueNumber": os.getenv("WEBKASSA_CASHBOX_ID"),
@@ -1092,7 +1068,14 @@ async def handle_altegio_webhook(
                 webhook_record.status = single_payload.status
                 webhook_record.client_phone = single_payload.data.client.phone if single_payload.data.client else ""
                 webhook_record.client_name = single_payload.data.client.name if single_payload.data.client else ""
-                webhook_record.record_date = datetime.fromisoformat(single_payload.data.datetime.replace(" ", "T").split("+")[0])
+                # Обрабатываем случай, когда datetime может отсутствовать и разные форматы дат
+                if single_payload.data.datetime:
+                    webhook_record.record_date = datetime.fromisoformat(single_payload.data.datetime.replace(" ", "T").split("+")[0])
+                elif single_payload.data.create_date:
+                    # Для goods_operations_sale используем create_date
+                    webhook_record.record_date = datetime.fromisoformat(single_payload.data.create_date.replace(" ", "T").split("+")[0])
+                else:
+                    webhook_record.record_date = datetime.utcnow()  # Используем текущее время как fallback
                 webhook_record.services_data = json.dumps([s.model_dump() for s in single_payload.data.services])
                 webhook_record.comment = single_payload.data.comment
                 webhook_record.raw_data = single_payload.model_dump()
@@ -1105,6 +1088,22 @@ async def handle_altegio_webhook(
             else:
                 # Создаем новую запись
                 logger.info(f"📝 Creating new webhook record for resource_id {single_payload.resource_id}")
+                # Обрабатываем случай, когда datetime может отсутствовать и разные форматы дат
+                record_date = datetime.utcnow()  # fallback
+                if single_payload.data.datetime:
+                    try:
+                        record_date = datetime.fromisoformat(single_payload.data.datetime.replace(" ", "T").split("+")[0])
+                    except (ValueError, AttributeError) as e:
+                        logger.warning(f"Failed to parse datetime '{single_payload.data.datetime}': {e}, using current time")
+                        record_date = datetime.utcnow()
+                elif single_payload.data.create_date:
+                    # Для goods_operations_sale используем create_date
+                    try:
+                        record_date = datetime.fromisoformat(single_payload.data.create_date.replace(" ", "T").split("+")[0])
+                    except (ValueError, AttributeError) as e:
+                        logger.warning(f"Failed to parse create_date '{single_payload.data.create_date}': {e}, using current time")
+                        record_date = datetime.utcnow()
+                
                 webhook_record = WebhookRecord(
                     company_id=single_payload.company_id,
                     resource=single_payload.resource,
@@ -1112,7 +1111,7 @@ async def handle_altegio_webhook(
                     status=single_payload.status,
                     client_phone=single_payload.data.client.phone if single_payload.data.client else "",
                     client_name=single_payload.data.client.name if single_payload.data.client else "",
-                    record_date=datetime.fromisoformat(single_payload.data.datetime.replace(" ", "T").split("+")[0]),
+                    record_date=record_date,
                     services_data=json.dumps([s.model_dump() for s in single_payload.data.services]),
                     comment=single_payload.data.comment,
                     raw_data=single_payload.model_dump()
@@ -1127,8 +1126,15 @@ async def handle_altegio_webhook(
             try:
                 # Обработка фискализации
                 altegio_document_id = None
-                if single_payload.data.documents:
-                    altegio_document_id = single_payload.data.documents[0].id
+                
+                # Извлекаем document_id в зависимости от типа webhook
+                if single_payload.resource == "goods_operations_sale":
+                    # Для goods_operations_sale document_id находится прямо в data
+                    altegio_document_id = single_payload.data.document_id
+                else:
+                    # Для record document_id находится в массиве documents
+                    if single_payload.data.documents:
+                        altegio_document_id = single_payload.data.documents[0].id
                 
                 if not altegio_document_id:
                     logger.warning(f"No document ID found in webhook for resource_id {single_payload.resource_id}")
@@ -1138,28 +1144,28 @@ async def handle_altegio_webhook(
                     await db.commit()
                     continue  # Пропускаем этот webhook
 
-                # Попытка получить документ Altegio
+                # Попытка получить документ Altegio (только для record webhook)
                 altegio_document = None
-                try:
-                    logger.info(f"Requesting Altegio document: company_id={single_payload.company_id}, document_id={altegio_document_id}, resource={single_payload.resource}")
-                    
-                    # Выбираем правильную функцию в зависимости от типа ресурса
-                    if single_payload.resource == "goods_operations_sale":
-                        logger.info(f"🛍️ Using goods sale document API for resource_id {single_payload.resource_id}")
-                        altegio_document = await get_altegio_sale_document(single_payload.company_id, altegio_document_id)
-                    else:
+                
+                if single_payload.resource == "goods_operations_sale":
+                    # Для goods_operations_sale все данные уже в webhook, документ не нужен
+                    logger.info(f"🛍️ Goods sale webhook - using data directly from webhook, skipping Altegio API call")
+                    altegio_document = {"data": []}  # Пустой документ для совместимости
+                else:
+                    # Для record webhook получаем документ из Altegio API
+                    try:
+                        logger.info(f"Requesting Altegio document: company_id={single_payload.company_id}, document_id={altegio_document_id}, resource={single_payload.resource}")
                         logger.info(f"📋 Using transactions document API for resource_id {single_payload.resource_id}")
                         altegio_document = await get_altegio_document(single_payload.company_id, altegio_document_id)
-                    
-                    logger.info(f"✅ Successfully fetched Altegio document for resource_id {single_payload.resource_id}")
-                    logger.info(f"📄 Altegio document content: {json.dumps(altegio_document, indent=2, ensure_ascii=False)}")
-                except HTTPException as altegio_error:
-                    logger.warning(f"❌ Failed to fetch Altegio document for resource_id {single_payload.resource_id}: {altegio_error.detail}")
-                    # Продолжаем обработку без документа Altegio
-                    altegio_document = {"data": []}
+                        logger.info(f"✅ Successfully fetched Altegio document for resource_id {single_payload.resource_id}")
+                        logger.info(f"📄 Altegio document content: {json.dumps(altegio_document, indent=2, ensure_ascii=False)}")
+                    except HTTPException as altegio_error:
+                        logger.warning(f"❌ Failed to fetch Altegio document for resource_id {single_payload.resource_id}: {altegio_error.detail}")
+                        # Продолжаем обработку без документа Altegio
+                        altegio_document = {"data": []}
 
-                # Проверяем, есть ли данные в altegio_document
-                if not altegio_document.get("data"):
+                # Проверяем, есть ли данные для обработки
+                if single_payload.resource != "goods_operations_sale" and not altegio_document.get("data"):
                     logger.warning(f"No data found in Altegio document for resource_id {single_payload.resource_id}, skipping fiscalization")
                     webhook_record.processing_error = "No data found in Altegio document"
                     webhook_record.processed = False
@@ -1184,7 +1190,7 @@ async def handle_altegio_webhook(
                     "company_id": single_payload.company_id,
                     "client_name": single_payload.data.client.name if single_payload.data.client else "Unknown",
                     "client_phone": single_payload.data.client.phone if single_payload.data.client else "Unknown",
-                    "record_date": single_payload.data.datetime,
+                    "record_date": single_payload.data.datetime if single_payload.data.datetime else (single_payload.data.create_date if single_payload.data.create_date else "Unknown"),
                     "comment": single_payload.data.comment,
                     "status": single_payload.status,
                     "resource": single_payload.resource,
