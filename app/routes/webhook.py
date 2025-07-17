@@ -24,6 +24,15 @@ from app.schemas.altegio import AltegioWebhookPayload, WebhookResponse
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# Константа для исключения платежей с комиссией эквайринга
+ACQUIRING_COMMISSION_COMMENT = "Автоматически созданная операция списания комиссии за эквайринг."
+
+def should_skip_transaction(transaction_comment: str) -> bool:
+    """
+    Проверяет, нужно ли пропустить транзакцию на основе комментария
+    """
+    return transaction_comment == ACQUIRING_COMMISSION_COMMENT
+
 # Очередь для обработки webhook - предотвращает параллельную обработку
 webhook_processing_semaphore = asyncio.Semaphore(1)  # Только один webhook одновременно
 webhook_processing_queue = asyncio.Queue()
@@ -486,6 +495,13 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
     # Обработка платежей из Altegio document (стандартный формат)
     for i, transaction in enumerate(transactions):
         amount = transaction.get('amount', 0)
+        transaction_comment = transaction.get('comment', '')
+        
+        # Проверяем комментарий для исключения комиссии эквайринга
+        if should_skip_transaction(transaction_comment):
+            logger.info(f"  🚫 Skipping transaction {i+1}: acquiring commission fee (amount: {amount}, comment: '{transaction_comment}')")
+            continue
+            
         if amount > 0:
             account_info = transaction.get('account', {})
             is_cash = account_info.get('is_cash', True)
@@ -503,6 +519,8 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
             payment_type_name = "Наличные" if payment_type == 0 else "Безналичный"
             logger.info(f"  💳 Payment {i+1}: {amount} тенге ({payment_type_name})")
             logger.info(f"     🏦 Account: {account_title}")
+            if transaction_comment:
+                logger.info(f"     💬 Comment: {transaction_comment}")
 
     # Если платежи не были найдены в документе, используем общую сумму из webhook
     if not payments:
@@ -618,6 +636,13 @@ async def prepare_webkassa_data_for_goods_sale(payload: AltegioWebhookPayload, a
         
         for i, transaction in enumerate(sale_transactions):
             amount = transaction.get('amount', 0)
+            transaction_comment = transaction.get('comment', '')
+            
+            # Проверяем комментарий для исключения комиссии эквайринга
+            if should_skip_transaction(transaction_comment):
+                logger.info(f"  🚫 Skipping payment transaction {i+1}: acquiring commission fee (amount: {amount}, comment: '{transaction_comment}')")
+                continue
+                
             if amount > 0:
                 account_info = transaction.get('account', {})
                 is_cash = account_info.get('is_cash', True)
@@ -635,6 +660,8 @@ async def prepare_webkassa_data_for_goods_sale(payload: AltegioWebhookPayload, a
                 payment_type_name = "Наличные" if payment_type == 0 else "Безналичный"
                 logger.info(f"  💳 Payment {i+1}: {amount} тенге ({payment_type_name})")
                 logger.info(f"     🏦 Account: {account_title}")
+                if transaction_comment:
+                    logger.info(f"     💬 Comment: {transaction_comment}")
 
     # Если платежи не были найдены в документе, используем общую сумму
     if not payments:
