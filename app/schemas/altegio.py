@@ -26,7 +26,7 @@ class AltegioClient(BaseModel):
     success_visits_count: int = Field(..., description="Количество успешных визитов")
     fail_visits_count: int = Field(..., description="Количество неуспешных визитов")
     discount: int = Field(..., description="Скидка клиента")
-    custom_fields: List[Any] = Field(default_factory=list, description="Пользовательские поля клиента")  # Значение по умолчанию
+    custom_fields: Union[List[Any], dict] = Field(default_factory=dict, description="Пользовательские поля клиента (может быть список или объект)")  # Поддерживаем и список и объект
     sex: int = Field(..., description="Пол клиента (0 - не указан, 1 - мужской, 2 - женский)")
     birthday: Optional[str] = Field("", description="День рождения клиента")  # Значение по умолчанию
     client_tags: List[AltegioClientTag] = Field(default_factory=list, description="Теги клиента")  # Значение по умолчанию
@@ -160,7 +160,7 @@ class AltegioRecordData(BaseModel):
     comer: Optional[Any] = Field(None, description="Пришедший")
     comer_person_info: Optional[Any] = Field(None, description="Информация о пришедшем")
     datetime: Optional[str] = Field(None, description="Дата и время записи с часовым поясом (для record)")
-    custom_fields: List[Any] = Field(default_factory=list, description="Пользовательские поля")
+    custom_fields: Union[List[Any], dict] = Field(default_factory=dict, description="Пользовательские поля (может быть список или объект)")  # Поддерживаем и список и объект
     custom_color: str = Field("", description="Пользовательский цвет")
     custom_font_color: str = Field("", description="Пользовательский цвет шрифта")
     record_labels: List[Any] = Field(default_factory=list, description="Метки записи")

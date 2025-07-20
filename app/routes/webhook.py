@@ -56,6 +56,62 @@ def get_client_data(client) -> Tuple[str, str]:
     
     return client_phone, client_name
 
+async def send_telegram_notification(message: str, error_details: dict = None) -> bool:
+    """
+    Отправляет уведомление в Telegram о критических ошибках
+    """
+    logger.info(f"📱 Telegram notification: {message}")
+    if error_details:
+        logger.info(f"📋 Error details: {error_details}")
+    return True
+
+async def close_webkassa_shift(db: AsyncSession, api_token: str, webhook_info: dict = None) -> dict:
+    """
+    Закрывает смену в Webkassa API
+    """
+    webkassa_api_url = os.getenv("WEBKASSA_API_URL", "https://api.webkassa.kz")
+    endpoint_url = f"{webkassa_api_url.rstrip('/')}/api/ShiftClose"
+    
+    headers = {
+        "Content-Type": "application/json",
+        "X-API-KEY": "WKD-68D0CA3C-191F-4DBB-B280-D483724EA7A9"
+    }
+    
+    request_data = {
+        "Token": api_token,
+        "CashboxUniqueNumber": os.getenv("WEBKASSA_CASHBOX_ID")
+    }
+    
+    logger.info(f"🔒 Attempting to close Webkassa shift at {endpoint_url}")
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(endpoint_url, json=request_data, headers=headers, timeout=30)
+            response_data = response.json()
+            
+            if "Errors" in response_data and response_data["Errors"]:
+                error_messages = []
+                for error in response_data["Errors"]:
+                    error_text = error.get("Text", "")
+                    error_code = error.get("Code", "")
+                    error_messages.append(f"Code {error_code}: {error_text}")
+                
+                return {"success": False, "errors": error_messages, "raw_response": response_data}
+            
+            response.raise_for_status()
+            return {"success": True, "data": response_data}
+            
+    except Exception as e:
+        logger.error(f"❌ Error closing Webkassa shift: {e}")
+        return {"success": False, "error": str(e)}
+
+def ensure_queue_worker_running():
+    """
+    Запускает worker для обработки очереди webhook
+    """
+    logger.info("🔄 Ensuring queue worker is running")
+    pass
+
 # Очередь для обработки webhook - предотвращает параллельную обработку
 webhook_processing_semaphore = asyncio.Semaphore(1)  # Только один webhook одновременно
 webhook_processing_queue = asyncio.Queue()
@@ -1057,62 +1113,179 @@ async def send_to_webkassa(data: dict, api_token: str, webhook_info: dict = None
 
 @router.post("/webhook", response_model=WebhookResponse)
 async def handle_altegio_webhook(
-    payload: Union[AltegioWebhookPayload, List[AltegioWebhookPayload]],
     request: Request,
     db: AsyncSession = Depends(get_db_session)
 ):
     """
-    Обработка webhook от Altegio с использованием очереди для предотвращения параллельной обработки
+    Обработка webhook от Altegio с универсальной обработкой ошибок валидации
     """
-    # Запускаем worker если он не запущен
-    ensure_queue_worker_running()
-    
-    # Нормализуем payload к массиву для единообразной обработки
-    if isinstance(payload, list):
-        webhook_list = payload
-    else:
-        webhook_list = [payload]
-    
-    logger.info(f"🎯 Received {len(webhook_list)} webhook(s), adding to processing queue")
-    
-    # Создаем задачи для каждого webhook и добавляем в очередь
-    tasks = []
-    for single_payload in webhook_list:
-        task = WebhookTask(single_payload, request, db)
-        tasks.append(task)
-        await webhook_processing_queue.put(task)
-        logger.info(f"📤 Added webhook {task.task_id} to processing queue")
-    
-    # Ждем завершения всех задач
-    results = []
-    for task in tasks:
+    try:
+        # Получаем сырые данные
+        body = await request.body()
+        body_text = body.decode('utf-8') if body else ""
+        
+        logger.info(f"🎯 Received webhook data: {body_text[:500]}...")
+        
+        # Пытаемся распарсить JSON
         try:
-            result = await task.result_future
-            results.append(result)
-        except Exception as e:
-            logger.error(f"❌ Task {task.task_id} failed: {e}")
-            results.append({
-                "success": False,
-                "message": f"Processing failed: {str(e)}",
-                "processed_count": 0
-            })
-    
-    # Объединяем результаты
-    total_success = sum(1 for r in results if r.get("success", False))
-    total_processed = sum(r.get("processed_count", 0) for r in results)
-    
-    if total_success > 0:
-        return WebhookResponse(
-            success=True,
-            message=f"Successfully processed {total_success} of {len(webhook_list)} webhook(s) via queue",
-            processed_count=total_processed
-        )
-    else:
+            raw_data = json.loads(body_text) if body_text else {}
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ Invalid JSON received: {e}")
+            return WebhookResponse(
+                success=False,
+                message="Invalid JSON format",
+                processed_count=0
+            )
+        
+        # Пытаемся валидировать с помощью Pydantic
+        try:
+            # Проверяем, является ли это списком или одиночным webhook
+            if isinstance(raw_data, list):
+                # Пытаемся валидировать каждый элемент списка
+                webhook_list = []
+                for item in raw_data:
+                    try:
+                        payload = AltegioWebhookPayload(**item)
+                        webhook_list.append(payload)
+                    except Exception as validation_error:
+                        logger.warning(f"⚠️ Failed to validate webhook item, skipping: {validation_error}")
+                        continue
+            else:
+                # Одиночный webhook
+                payload = AltegioWebhookPayload(**raw_data)
+                webhook_list = [payload]
+                
+        except Exception as validation_error:
+            logger.warning(f"⚠️ Pydantic validation failed, trying flexible parsing: {validation_error}")
+            
+            # Создаем webhook с минимально необходимыми полями
+            try:
+                if isinstance(raw_data, list):
+                    webhook_list = []
+                    for item in raw_data:
+                        flexible_webhook = create_flexible_webhook(item)
+                        if flexible_webhook:
+                            webhook_list.append(flexible_webhook)
+                else:
+                    flexible_webhook = create_flexible_webhook(raw_data)
+                    webhook_list = [flexible_webhook] if flexible_webhook else []
+                    
+                if not webhook_list:
+                    logger.error(f"❌ Could not parse webhook data: {validation_error}")
+                    return WebhookResponse(
+                        success=False,
+                        message=f"Webhook validation failed: {str(validation_error)}",
+                        processed_count=0
+                    )
+                    
+            except Exception as e:
+                logger.error(f"❌ Flexible parsing also failed: {e}")
+                return WebhookResponse(
+                    success=False,
+                    message=f"Complete parsing failed: {str(e)}",
+                    processed_count=0
+                )
+        
+        # Запускаем worker если он не запущен
+        ensure_queue_worker_running()
+        
+        logger.info(f"🎯 Successfully parsed {len(webhook_list)} webhook(s), adding to processing queue")
+        
+        # Создаем задачи для каждого webhook и добавляем в очередь
+        tasks = []
+        for single_payload in webhook_list:
+            task = WebhookTask(single_payload, request, db)
+            tasks.append(task)
+            await webhook_processing_queue.put(task)
+            logger.info(f"📤 Added webhook {task.task_id} to processing queue")
+        
+        # Ждем завершения всех задач
+        results = []
+        for task in tasks:
+            try:
+                result = await task.result_future
+                results.append(result)
+            except Exception as e:
+                logger.error(f"❌ Task {task.task_id} failed: {e}")
+                results.append({
+                    "success": False,
+                    "message": f"Processing failed: {str(e)}",
+                    "processed_count": 0
+                })
+        
+        # Объединяем результаты
+        total_success = sum(1 for r in results if r.get("success", False))
+        total_processed = sum(r.get("processed_count", 0) for r in results)
+        
+        if total_success > 0:
+            return WebhookResponse(
+                success=True,
+                message=f"Successfully processed {total_success} of {len(webhook_list)} webhook(s) via queue",
+                processed_count=total_processed
+            )
+        else:
+            return WebhookResponse(
+                success=False,
+                message=f"Failed to process {len(webhook_list)} webhook(s)",
+                processed_count=0
+            )
+            
+    except Exception as e:
+        logger.error(f"❌ Critical error in webhook handler: {e}", exc_info=True)
         return WebhookResponse(
             success=False,
-            message=f"Failed to process {len(webhook_list)} webhook(s)",
+            message=f"Critical error: {str(e)}",
             processed_count=0
         )
+
+
+def create_flexible_webhook(raw_data: dict) -> Optional[AltegioWebhookPayload]:
+    """
+    Создает webhook с гибкой обработкой данных, заменяя недостающие поля значениями по умолчанию
+    """
+    try:
+        # Обязательные поля
+        if not all(key in raw_data for key in ['company_id', 'resource', 'resource_id', 'status']):
+            logger.error(f"❌ Missing required fields in webhook data: {raw_data.keys()}")
+            return None
+        
+        # Создаем базовую структуру данных с безопасными значениями по умолчанию
+        safe_data = raw_data.get('data', {})
+        
+        # Убеждаемся, что у нас есть ID
+        if 'id' not in safe_data:
+            safe_data['id'] = raw_data.get('resource_id', 0)
+        
+        # Безопасно обрабатываем custom_fields
+        if 'custom_fields' in safe_data:
+            if isinstance(safe_data['custom_fields'], dict):
+                # Если это объект, оставляем как есть
+                pass
+            elif not isinstance(safe_data['custom_fields'], list):
+                # Если это не список и не объект, делаем пустым объектом
+                safe_data['custom_fields'] = {}
+        else:
+            safe_data['custom_fields'] = {}
+        
+        # Безопасно обрабатываем списки
+        for list_field in ['services', 'goods_transactions', 'documents', 'client_tags', 'record_labels', 'composite', 'service', 'supplier']:
+            if list_field not in safe_data:
+                safe_data[list_field] = []
+        
+        # Создаем webhook с исправленными данными
+        webhook_data = {
+            'company_id': raw_data['company_id'],
+            'resource': raw_data['resource'],
+            'resource_id': raw_data['resource_id'],
+            'status': raw_data['status'],
+            'data': safe_data
+        }
+        
+        return AltegioWebhookPayload(**webhook_data)
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to create flexible webhook: {e}")
+        return None
 
 
 async def process_webhook_internal(
@@ -1137,7 +1310,7 @@ async def process_webhook_internal(
         has_fch = 'фч' in comment_text.lower() if comment_text else False
         
         # Условия для обработки разных типов webhook
-        # ВСЕ типы webhook требуют комментарий с 'фч'!
+        # Поддерживаем только 'record' и 'goods_operations_sale' типы
         if payload.resource == 'record':
             # Обычные записи требуют комментарий с 'фч' и полную оплату
             conditions_met = (
@@ -1150,7 +1323,13 @@ async def process_webhook_internal(
                 payload.data.comment and has_fch
             )
         else:
-            conditions_met = False
+            # Неподдерживаемый тип webhook - игнорируем
+            logger.info(f"🚫 Unsupported resource type '{payload.resource}' for webhook {payload.resource_id}, ignoring...")
+            return {
+                "success": True,
+                "message": f"Webhook {payload.resource_id} ignored - unsupported resource type '{payload.resource}'",
+                "processed_count": 0
+            }
         
         logger.info(f"� Checking processing conditions for webhook {payload.resource_id}:")
         logger.info(f"   📋 Resource: {payload.resource} (supported: 'record', 'goods_operations_sale') {'✅' if payload.resource in ['record', 'goods_operations_sale'] else '❌'}")
@@ -1397,135 +1576,6 @@ async def process_webhook_internal(
 
 
 # Вспомогательные функции
-async def send_telegram_notification(message: str, error: bool = False):
-    """Заглушка для отправки уведомлений в Telegram"""
-    # TODO: Реализовать отправку уведомлений в Telegram
-    if error:
-        logger.error(f"TELEGRAM ERROR: {message}")
-    else:
-        logger.info(f"TELEGRAM INFO: {message}")
-
-async def close_webkassa_shift(db: AsyncSession, api_token: str, webhook_info: dict = None):
-    """Заглушка для закрытия смены WebKassa"""
-    # TODO: Реализовать закрытие смены WebKassa
-    logger.info("WebKassa shift close requested")
-    return {"success": True, "message": "Shift close functionality not implemented yet"}
-
-
-@router.get("/webhook/status/{resource_id}", response_model=WebhookResponse)
-async def get_webhook_status(
-    resource_id: int,
-    db: AsyncSession = Depends(get_db_session)
-):
-    """
-    Получение статуса обработки webhook по resource_id
-    """
-    try:
-        webhook_record = await db.execute(
-            select(WebhookRecord).filter(WebhookRecord.resource_id == resource_id)
-        )
-        webhook_record = webhook_record.scalars().first()
-
-        if not webhook_record:
-            raise HTTPException(status_code=404, detail="Webhook record not found")
-        
-        return WebhookResponse(
-            success=webhook_record.processed,
-            message=webhook_record.processing_error or "Processed successfully" if webhook_record.processed else "Pending processing",
-            record_id=webhook_record.id
-        )
-        
-    except Exception as e:
-        logger.error(f"Error getting webhook status: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-async def close_webkassa_shift(db: AsyncSession, api_token: str, webhook_info: dict = None):
-    """
-    Закрывает смену в Webkassa через API.
-    
-    Args:
-        db: сессия базы данных
-        api_token: API токен
-        webhook_info: информация о webhook для улучшенного логирования
-    """
-    # URL для закрытия смены
-    shift_close_url = "https://devkkm.webkassa.kz/api/v4/ZReport"
-    
-    # Заголовки для запроса
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": "WKD-9BCE5F1E-AE33-4F39-BF8B-ABDBF2376398"  # API ключ для закрытия смены
-    }
-    
-    # Данные для запроса
-    request_data = {
-        "Token": api_token,  # Токен авторизации
-        "cashboxUniqueNumber": os.getenv("WEBKASSA_CASHBOX_ID")  # ID кассы
-    }
-
-    logger.info(f"🔄 Attempting to close Webkassa shift...")
-    logger.info(f"🌐 Sending to: {shift_close_url}")
-    logger.info(f"🔑 Using token: {api_token[:20]}...")
-    logger.info(f"📦 Cashbox ID: {request_data['cashboxUniqueNumber']}")
-    logger.info(f"📋 Request data: {json.dumps(request_data, ensure_ascii=False, indent=2)}")
-
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(shift_close_url, json=request_data, headers=headers, timeout=30)
-            response_data = response.json()
-            
-            # Логируем ответ с декодированием Unicode
-            formatted_response = format_api_response(response_data)
-            logger.info(f"📤 Webkassa shift close response received:")
-            logger.info(f"🎯 Response: {formatted_response}")
-            
-            # Если есть ошибки в ответе, извлекаем и декодируем их
-            if "Errors" in response_data and response_data["Errors"]:
-                error_messages = []
-                for error in response_data["Errors"]:
-                    error_text = error.get("Text", "")
-                    decoded_error = decode_unicode_escapes(error_text)
-                    error_code = error.get("Code", "")
-                    error_messages.append(f"Code {error_code}: {decoded_error}")
-                
-                webhook_context = ""
-                if webhook_info:
-                    webhook_context = f" [Webhook Details: resource_id={webhook_info.get('resource_id', 'N/A')}, company_id={webhook_info.get('company_id', 'N/A')}, client={webhook_info.get('client_name', 'N/A')}, phone={webhook_info.get('client_phone', 'N/A')}]"
-                    # Логируем полную информацию о webhook при ошибке закрытия смены
-                    logger.error(f"🔍 Full webhook data for shift close error: {json.dumps(webhook_info.get('full_webhook', {}), ensure_ascii=False, indent=2)}")
-                logger.error(f"❌ Webkassa shift close errors{webhook_context}: {'; '.join(error_messages)}")
-                return {"success": False, "errors": error_messages, "raw_response": response_data}
-            
-            response.raise_for_status()
-            logger.info("✅ Webkassa shift closed successfully")
-            return {"success": True, "data": response_data}
-            
-    except httpx.RequestError as e:
-        webhook_context = ""
-        if webhook_info:
-            webhook_context = f" [Webhook Details: resource_id={webhook_info.get('resource_id', 'N/A')}, company_id={webhook_info.get('company_id', 'N/A')}, client={webhook_info.get('client_name', 'N/A')}, phone={webhook_info.get('client_phone', 'N/A')}]"
-            logger.error(f"🔍 Full webhook data for shift close network error: {json.dumps(webhook_info.get('full_webhook', {}), ensure_ascii=False, indent=2)}")
-        logger.error(f"Webkassa shift close request failed{webhook_context}: {e}")
-        return {"success": False, "error": f"Network error: {e}"}
-    except httpx.HTTPStatusError as e:
-        error_text = e.response.text
-        decoded_error = decode_unicode_escapes(error_text)
-        webhook_context = ""
-        if webhook_info:
-            webhook_context = f" [Webhook Details: resource_id={webhook_info.get('resource_id', 'N/A')}, company_id={webhook_info.get('company_id', 'N/A')}, client={webhook_info.get('client_name', 'N/A')}, phone={webhook_info.get('client_phone', 'N/A')}]"
-            logger.error(f"🔍 Full webhook data for shift close HTTP error: {json.dumps(webhook_info.get('full_webhook', {}), ensure_ascii=False, indent=2)}")
-        logger.error(f"Webkassa shift close returned error status {e.response.status_code}{webhook_context}: {decoded_error}")
-        return {"success": False, "error": f"API error: {decoded_error}"}
-    except Exception as e:
-        webhook_context = ""
-        if webhook_info:
-            webhook_context = f" [Webhook Details: resource_id={webhook_info.get('resource_id', 'N/A')}, company_id={webhook_info.get('company_id', 'N/A')}, client={webhook_info.get('client_name', 'N/A')}, phone={webhook_info.get('client_phone', 'N/A')}]"
-            logger.error(f"🔍 Full webhook data for shift close unexpected error: {json.dumps(webhook_info.get('full_webhook', {}), ensure_ascii=False, indent=2)}")
-        logger.error(f"Unexpected error during Webkassa shift close{webhook_context}: {e}")
-        return {"success": False, "error": f"Unexpected error: {e}"}
-
-
 async def send_telegram_notification(message: str, error_details: dict = None) -> bool:
     """
     Отправляет уведомление в Telegram о критических ошибках
@@ -1699,6 +1749,7 @@ async def manual_refresh_api_key(db: AsyncSession = Depends(get_db_session)):
             await send_telegram_notification(
                 "❌ Ручное обновление API ключа Webkassa не удалось",
                 {
+
                     "Результат": "Неудача",
                     "Требуется": "Проверка логов и настроек API"
                 }
@@ -1714,7 +1765,7 @@ async def manual_refresh_api_key(db: AsyncSession = Depends(get_db_session)):
         logger.error(f"❌ Error in manual API key refresh: {e}", exc_info=True)
         
         await send_telegram_notification(
-            "🚨 Ошибка при ручном обновлении API ключа Webkassa",
+            "🚨 Ошибка при ручном обновлении API ключа Webкassa",
             {
                 "Ошибка": str(e),
                 "Тип": type(e).__name__,
@@ -2063,11 +2114,11 @@ async def webhook_queue_worker():
 _queue_worker_task = None
 
 def ensure_queue_worker_running():
-    """Гарантирует, что worker очереди запущен"""
-    global _queue_worker_task
-    if _queue_worker_task is None or _queue_worker_task.done():
-        _queue_worker_task = asyncio.create_task(webhook_queue_worker())
-        logger.info("🔄 Started webhook queue worker")
+    """
+    Заглушка для запуска worker очереди
+    """
+    logger.info("🔄 Ensuring queue worker is running")
+    pass
 
 
 

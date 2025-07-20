@@ -8,6 +8,7 @@ import asyncio
 import os
 import sys
 import logging
+import json
 from datetime import datetime
 from typing import Optional
 
@@ -215,16 +216,25 @@ class WebkassaKeyUpdater:
             
             logger.info("🔍 Step 2: Parsing token data...")
             # Извлекаем токен из ответа
-            # Webkassa возвращает: {"Data":{"Token":"..."}}
+            # Webkassa возвращает: {"Data":{"Token":"...", "UserId":"..."}}
             new_token = None
             user_id = None
             
-            if "Data" in token_data and "Token" in token_data["Data"]:
-                new_token = token_data["Data"]["Token"]
-                logger.info("📋 Found token in Data.Token field")
+            logger.info(f"📋 Full Webkassa response: {json.dumps(token_data, ensure_ascii=False, indent=2)}")
+            
+            if "Data" in token_data:
+                data_section = token_data["Data"]
+                if "Token" in data_section:
+                    new_token = data_section["Token"]
+                    logger.info("📋 Found token in Data.Token field")
+                if "UserId" in data_section:
+                    user_id = str(data_section["UserId"])
+                    logger.info("📋 Found user_id in Data.UserId field")
             elif "token" in token_data:
                 new_token = token_data["token"]
                 logger.info("📋 Found token in token field")
+                if "user_id" in token_data:
+                    user_id = str(token_data["user_id"])
             elif "access_token" in token_data:
                 new_token = token_data["access_token"]
                 logger.info("📋 Found token in access_token field")
@@ -235,16 +245,9 @@ class WebkassaKeyUpdater:
                 logger.error(f"Unable to extract token from response: {token_data}")
                 return False
             
-            # Извлекаем user_id если есть (для Webkassa обычно не нужен)
-            if "Data" in token_data and "UserId" in token_data["Data"]:
-                user_id = str(token_data["Data"]["UserId"])
-                logger.info("📋 Found user_id in Data.UserId field")
-            elif "user_id" in token_data:
-                user_id = str(token_data["user_id"])
-                logger.info("📋 Found user_id in user_id field")
-            elif "id" in token_data:
-                user_id = str(token_data["id"])
-                logger.info("📋 Found user_id in id field")
+            if not new_token:
+                logger.error(f"Token is empty or None: {new_token}")
+                return False
             
             logger.info(f"🔑 Extracted token: {new_token[:20]}...{new_token[-10:] if len(new_token) > 30 else new_token[20:]}")
             if user_id:
