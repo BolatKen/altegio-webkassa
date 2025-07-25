@@ -117,18 +117,14 @@ webhook_processing_semaphore = asyncio.Semaphore(1)  # Только один web
 webhook_processing_queue = asyncio.Queue()
 
 class WebhookTask:
-    """Задача для обработки webhook в очереди"""
     def __init__(self, payload, request, db_session):
         self.payload = payload
         self.request = request
         self.db_session = db_session
         self.task_id = getattr(payload, "resource_id", None)
-        self.result_future = None  # Для совместимости с остальным кодом
 
     async def run(self):
-        # Запускаем обработку webhook
-        self.result_future = process_webhook_internal(self.payload, self.request, self.db_session)
-        return await self.result_future
+        return await process_webhook_internal(self.payload, self.request, self.db_session)
 
 
 def decode_unicode_escapes(text: str) -> str:
@@ -1198,15 +1194,15 @@ async def handle_altegio_webhook(
         
         # Создаем задачи для каждого webhook и добавляем в очередь
         tasks = []
+        results = []
         for single_payload in webhook_list:
             task = WebhookTask(single_payload, request, db)
             tasks.append(task)
-            # Сразу запускаем обработку
             result = await task.run()
             logger.info(f"📤 Webhook {task.task_id} processed immediately")
+            results.append(result)
         
         # Ждем завершения всех задач
-        results = []
         for task in tasks:
             try:
                 result = await task.result_future
