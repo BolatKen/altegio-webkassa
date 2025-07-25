@@ -25,7 +25,7 @@ class AltegioClient(BaseModel):
     email: Optional[str] = Field("", description="Email клиента")  # Значение по умолчанию
     success_visits_count: int = Field(..., description="Количество успешных визитов")
     fail_visits_count: int = Field(..., description="Количество неуспешных визитов")
-    discount: int = Field(..., description="Скидка клиента")
+    discount: float = Field(..., description="Скидка клиента")
     custom_fields: Union[List[Any], dict] = Field(default_factory=dict, description="Пользовательские поля клиента (может быть список или объект)")  # Поддерживаем и список и объект
     sex: int = Field(..., description="Пол клиента (0 - не указан, 1 - мужской, 2 - женский)")
     birthday: Optional[str] = Field("", description="День рождения клиента")  # Значение по умолчанию
@@ -40,7 +40,7 @@ class AltegioService(BaseModel):
     cost_to_pay: int = Field(..., description="Стоимость к оплате в копейках")
     manual_cost: int = Field(..., description="Ручная стоимость в копейках")
     cost_per_unit: int = Field(..., description="Стоимость за единицу в копейках")
-    discount: int = Field(..., description="Скидка на услугу")
+    discount: float = Field(..., description="Скидка на услугу")
     first_cost: int = Field(..., description="Первоначальная стоимость в копейках")
     amount: int = Field(..., description="Количество услуг")
 
@@ -178,7 +178,7 @@ class AltegioRecordData(BaseModel):
     last_change_date: Optional[str] = Field(None, description="Дата последнего изменения")
     cost_per_unit: Optional[int] = Field(None, description="Стоимость за единицу")
     cost: Optional[int] = Field(None, description="Общая стоимость")
-    discount: Optional[int] = Field(None, description="Скидка")
+    discount: Optional[float] = Field(None, description="Скидка")
     record_id: Optional[int] = Field(None, description="ID записи")
     loyalty_abonement_id: Optional[int] = Field(None, description="ID абонемента лояльности")
     loyalty_certificate_id: Optional[int] = Field(None, description="ID сертификата лояльности")
