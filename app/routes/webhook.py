@@ -122,8 +122,13 @@ class WebhookTask:
         self.payload = payload
         self.request = request
         self.db_session = db_session
-        self.result_future = asyncio.Future()
-        self.task_id = f"{payload.resource_id}_{payload.company_id}"
+        self.task_id = getattr(payload, "resource_id", None)
+        self.result_future = None  # Для совместимости с остальным кодом
+
+    async def run(self):
+        # Запускаем обработку webhook
+        self.result_future = process_webhook_internal(self.payload, self.request, self.db_session)
+        return await self.result_future
 
 
 def decode_unicode_escapes(text: str) -> str:
