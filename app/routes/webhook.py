@@ -1202,18 +1202,7 @@ async def handle_altegio_webhook(
             logger.info(f"📤 Webhook {task.task_id} processed immediately")
             results.append(result)
         
-        # Ждем завершения всех задач
-        for task in tasks:
-            try:
-                result = await task.result_future
-                results.append(result)
-            except Exception as e:
-                logger.error(f"❌ Task {task.task_id} failed: {e}")
-                results.append({
-                    "success": False,
-                    "message": f"Processing failed: {str(e)}",
-                    "processed_count": 0
-                })
+        # ...existing code...
         
         # Объединяем результаты
         total_success = sum(1 for r in results if r.get("success", False))
