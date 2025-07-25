@@ -1187,7 +1187,7 @@ async def handle_altegio_webhook(
                 )
         
         # Запускаем worker если он не запущен
-        ensure_queue_worker_running()
+        # ensure_queue_worker_running()
         
         logger.info(f"🎯 Successfully parsed {len(webhook_list)} webhook(s), adding to processing queue")
         
@@ -1196,8 +1196,9 @@ async def handle_altegio_webhook(
         for single_payload in webhook_list:
             task = WebhookTask(single_payload, request, db)
             tasks.append(task)
-            await webhook_processing_queue.put(task)
-            logger.info(f"📤 Added webhook {task.task_id} to processing queue")
+            # Сразу запускаем обработку
+            result = await task.run()
+            logger.info(f"📤 Webhook {task.task_id} processed immediately")
         
         # Ждем завершения всех задач
         results = []
@@ -1255,7 +1256,17 @@ def create_flexible_webhook(raw_data: dict) -> Optional[AltegioWebhookPayload]:
         # Убеждаемся, что у нас есть ID
         if 'id' not in safe_data:
             safe_data['id'] = raw_data.get('resource_id', 0)
-        
+
+        # Исправляем поле prepaid, если оно невалидное
+        if 'prepaid' in safe_data:
+            val = safe_data['prepaid']
+            # Если это строка и не похоже на bool, ставим False
+            if isinstance(val, str) and val not in ['true', 'false', '1', '0', 'True', 'False']:
+                safe_data['prepaid'] = False
+            # Если это не bool и не int, тоже ставим False
+            elif not isinstance(val, (bool, int)):
+                safe_data['prepaid'] = False
+
         # Безопасно обрабатываем custom_fields
         if 'custom_fields' in safe_data:
             if isinstance(safe_data['custom_fields'], dict):
@@ -1334,8 +1345,7 @@ async def process_webhook_internal(
         logger.info(f"� Checking processing conditions for webhook {payload.resource_id}:")
         logger.info(f"   📋 Resource: {payload.resource} (supported: 'record', 'goods_operations_sale') {'✅' if payload.resource in ['record', 'goods_operations_sale'] else '❌'}")
         logger.info(f"   💬 Comment: '{comment_text}' (must contain 'фч') {'✅' if has_fch else '❌'}")
-        logger.info(f"   � Comment bytes: {comment_text.encode('utf-8') if comment_text else b''}")
-        logger.info(f"   💬 Contains 'фч': {has_fch}")
+        logger.info(f"   �️ Goods sale: requires 'фч' comment {'✅' if has_fch else '❌'}")
         
         if payload.resource == 'record':
             logger.info(f"   💰 Paid full: {payload.data.paid_full} (required: 1) {'✅' if payload.data.paid_full == 1 else '❌'}")
