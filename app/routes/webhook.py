@@ -519,12 +519,15 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
 
     # Обработка позиций (услуг) из webhook
     for i, service in enumerate(services):
-        service_total = service.cost_per_unit * service.amount * (1 - service.discount / 100)  # Сумма с учетом скидки в процентах
+        # Используем cost_to_pay - это финальная сумма к оплате за услугу с учетом всех скидок
+        final_price_per_unit = service.cost_to_pay / service.amount if service.amount > 0 else service.cost_to_pay
+        service_total = service.cost_to_pay  # Используем реальную сумму к оплате
+        
         position = {
             "Count": service.amount,
-            "Price": service.cost_per_unit ,#/ 100,  # Конвертация из копеек в тенге
+            "Price": final_price_per_unit,  # Цена за единицу с учетом скидки
             "PositionName": service.title,
-            "Discount": service.discount / 100 * service.first_cost,  # Скидка в тенге
+            "Discount": 0,  # Скидка уже учтена в цене
             "Tax": "0",
             "TaxType": "0", 
             "TaxPercent": "0"
@@ -533,18 +536,22 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
         total_sum_for_webkassa += service_total
         
         logger.info(f"  📦 Service {i+1}: {service.title}")
-        logger.info(f"     💵 Cost: {service.cost_per_unit} тенге x {service.amount} = {(service.cost_per_unit * service.amount)} тенге")
-        logger.info(f"     🎫 Discount: {service.discount}% = {service.discount / 100 * service.cost_per_unit} тенге")
-        logger.info(f"     💰 Total: {service_total} тенге")
+        logger.info(f"     💵 Original cost: {service.cost_per_unit} тенге x {service.amount} = {(service.cost_per_unit * service.amount)} тенге")
+        logger.info(f"     🎫 Discount: {service.discount}% = {(service.cost_per_unit * service.amount) - service.cost_to_pay} тенге")
+        logger.info(f"     💰 Final price per unit: {final_price_per_unit} тенге")
+        logger.info(f"     💰 Total to pay: {service_total} тенге")
 
     # Обработка товаров из webhook (goods_transactions)
     for i, good in enumerate(goods):
-        good_total = good["cost_per_unit"] * abs(good["amount"]) * (1 - good["discount"] / 100)  # Сумма с учетом скидки в процентах
+        # Используем реальную стоимость товара с учетом скидок
+        good_total = good.get("cost_to_pay", good["cost_per_unit"] * abs(good["amount"]) * (1 - good["discount"] / 100))
+        final_price_per_unit = good_total / abs(good["amount"]) if abs(good["amount"]) > 0 else good_total
+        
         position = {
             "Count": abs(good["amount"]),
-            "Price": good["cost_per_unit"],  # Конвертация из копеек в тенге
+            "Price": final_price_per_unit,  # Цена за единицу с учетом скидки
             "PositionName": good["title"],
-            "Discount": good["discount"] / 100 * good["price"],  # Скидка в тенге
+            "Discount": 0,  # Скидка уже учтена в цене
             "Tax": "0",
             "TaxType": "0", 
             "TaxPercent": "0"
@@ -553,9 +560,10 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
         total_sum_for_webkassa += good_total
         
         logger.info(f"  📦 Good {i+1}: {good['title']}")
-        logger.info(f"     💵 Cost: {good['cost_per_unit']} тенге x {abs(good['amount'])} = {(good['cost_per_unit'] * abs(good['amount']))} тенге")
-        logger.info(f"     🎫 Discount: {good['discount']}% = {good['discount'] / 100 * good['cost']} тенге")
-        logger.info(f"     💰 Total: {good_total} тенге")
+        logger.info(f"     💵 Original cost: {good['cost_per_unit']} тенге x {abs(good['amount'])} = {(good['cost_per_unit'] * abs(good['amount']))} тенге")
+        logger.info(f"     🎫 Discount: {good['discount']}% = {(good['cost_per_unit'] * abs(good['amount'])) - good_total} тенге")
+        logger.info(f"     💰 Final price per unit: {final_price_per_unit} тенге")
+        logger.info(f"     💰 Total to pay: {good_total} тенге")
 
     # Обработка платежей из transactions (уже извлеченных выше)
     logger.info(f"💳 Processing {len(transactions)} transactions from Altegio document:")
