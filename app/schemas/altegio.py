@@ -36,12 +36,12 @@ class AltegioService(BaseModel):
     """Модель услуги из Altegio"""
     id: int = Field(..., description="ID услуги")
     title: str = Field(..., description="Название услуги")
-    cost: int = Field(..., description="Стоимость услуги в копейках")
-    cost_to_pay: int = Field(..., description="Стоимость к оплате в копейках")
-    manual_cost: int = Field(..., description="Ручная стоимость в копейках")
-    cost_per_unit: int = Field(..., description="Стоимость за единицу в копейках")
+    cost: Union[int, float] = Field(..., description="Стоимость услуги в копейках")
+    cost_to_pay: Union[int, float] = Field(..., description="Стоимость к оплате в копейках")
+    manual_cost: Union[int, float] = Field(..., description="Ручная стоимость в копейках")
+    cost_per_unit: Union[int, float] = Field(..., description="Стоимость за единицу в копейках")
     discount: float = Field(..., description="Скидка на услугу")
-    first_cost: int = Field(..., description="Первоначальная стоимость в копейках")
+    first_cost: Union[int, float] = Field(..., description="Первоначальная стоимость в копейках")
     amount: int = Field(..., description="Количество услуг")
 
 
@@ -176,8 +176,8 @@ class AltegioRecordData(BaseModel):
     amount: Optional[int] = Field(None, description="Количество (может быть отрицательным)")
     create_date: Optional[str] = Field(None, description="Дата создания (для goods_operations_sale)")
     last_change_date: Optional[str] = Field(None, description="Дата последнего изменения")
-    cost_per_unit: Optional[int] = Field(None, description="Стоимость за единицу")
-    cost: Optional[int] = Field(None, description="Общая стоимость")
+    cost_per_unit: Optional[Union[int, float]] = Field(None, description="Стоимость за единицу")
+    cost: Optional[Union[int, float]] = Field(None, description="Общая стоимость")
     discount: Optional[float] = Field(None, description="Скидка")
     record_id: Optional[int] = Field(None, description="ID записи")
     loyalty_abonement_id: Optional[int] = Field(None, description="ID абонемента лояльности")
