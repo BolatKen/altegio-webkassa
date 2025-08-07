@@ -855,21 +855,25 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
             # Пытаемся обновить ключ
             refreshed_key = await refresh_webkassa_api_key(db)
             
-            if refreshed_key and refreshed_key.api_key != api_token:
+            if refreshed_key:
                 logger.info("✅ Successfully refreshed API key, retrying request...")
-                logger.info(f"🔄 New token (first 20): {refreshed_key.api_key[:20]}...")
+                logger.info(f"🔄 Using token (first 20): {refreshed_key.api_key[:20]}...")
                 
-                # Повторяем запрос с новым ключом
+                # Повторяем запрос с обновленным ключом (может быть тот же самый)
                 retry_result = await send_to_webkassa(webkassa_data, refreshed_key.api_key, webhook_info)
                 if retry_result["success"]:
                     logger.info("✅ Request succeeded after key refresh")
                     
                     # Успешное уведомление
+                    token_changed = refreshed_key.api_key != api_token
+                    status_message = "API ключ успешно обновлен" if token_changed else "API ключ актуален, повторный запрос успешен"
+                    
                     await send_telegram_notification(
                         "✅ Проблема с авторизацией Webкassa решена",
                         {
-                            "Результат": "API ключ успешно обновлен",
-                            "Новый токен": f"{refreshed_key.api_key[:20]}...{refreshed_key.api_key[-10:]}",
+                            "Результат": status_message,
+                            "Токен": f"{refreshed_key.api_key[:20]}...{refreshed_key.api_key[-10:]}",
+                            "Изменился": "Да" if token_changed else "Нет",
                             "Статус": "Запрос успешно выполнен после обновления ключа"
                         }
                     )
@@ -881,8 +885,8 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
                     await send_telegram_notification(
                         "🚨 КРИТИЧЕСКАЯ ОШИБКА: Webкassa не работает даже после обновления токена",
                         {
-                            "Проблема": "Запрос не прошел даже с новым API ключом",
-                            "Новый токен": f"{refreshed_key.api_key[:20]}...{refreshed_key.api_key[-10:]}",
+                            "Проблема": "Запрос не прошел даже с обновленным API ключом",
+                            "Токен": f"{refreshed_key.api_key[:20]}...{refreshed_key.api_key[-10:]}",
                             "Ошибки": "; ".join(retry_result.get('errors', [])),
                             "Требуется": "Немедленная проверка настроек Webkassa API"
                         }
