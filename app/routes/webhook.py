@@ -519,15 +519,16 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
 
     # Обработка позиций (услуг) из webhook
     for i, service in enumerate(services):
-        # Используем cost_to_pay - это финальная сумма к оплате за услугу с учетом всех скидок
-        final_price_per_unit = service.cost_to_pay / service.amount if service.amount > 0 else service.cost_to_pay
+        # Используем оригинальную цену и рассчитываем скидку отдельно
+        original_price_per_unit = service.cost_per_unit
+        discount_amount = (service.cost_per_unit * service.amount) - service.cost_to_pay
         service_total = service.cost_to_pay  # Используем реальную сумму к оплате
         
         position = {
             "Count": service.amount,
-            "Price": final_price_per_unit,  # Цена за единицу с учетом скидки
+            "Price": original_price_per_unit,  # Оригинальная цена за единицу
             "PositionName": service.title,
-            "Discount": 0,  # Скидка уже учтена в цене
+            "Discount": discount_amount,  # Скидка в тенге
             "Tax": "0",
             "TaxType": "0", 
             "TaxPercent": "0"
@@ -543,15 +544,17 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
 
     # Обработка товаров из webhook (goods_transactions)
     for i, good in enumerate(goods):
-        # Используем реальную стоимость товара с учетом скидок
-        good_total = good.get("cost_to_pay", good["cost_per_unit"] * abs(good["amount"]) * (1 - good["discount"] / 100))
-        final_price_per_unit = good_total / abs(good["amount"]) if abs(good["amount"]) > 0 else good_total
+        # Используем оригинальную цену и рассчитываем скидку отдельно
+        original_price_per_unit = good["cost_per_unit"]
+        original_total = original_price_per_unit * abs(good["amount"])
+        good_total = good.get("cost_to_pay", original_total * (1 - good["discount"] / 100))
+        discount_amount = original_total - good_total
         
         position = {
             "Count": abs(good["amount"]),
-            "Price": final_price_per_unit,  # Цена за единицу с учетом скидки
+            "Price": original_price_per_unit,  # Оригинальная цена за единицу
             "PositionName": good["title"],
-            "Discount": 0,  # Скидка уже учтена в цене
+            "Discount": discount_amount,  # Скидка в тенге
             "Tax": "0",
             "TaxType": "0", 
             "TaxPercent": "0"
@@ -560,9 +563,8 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
         total_sum_for_webkassa += good_total
         
         logger.info(f"  📦 Good {i+1}: {good['title']}")
-        logger.info(f"     💵 Original cost: {good['cost_per_unit']} тенге x {abs(good['amount'])} = {(good['cost_per_unit'] * abs(good['amount']))} тенге")
-        logger.info(f"     🎫 Discount: {good['discount']}% = {(good['cost_per_unit'] * abs(good['amount'])) - good_total} тенге")
-        logger.info(f"     💰 Final price per unit: {final_price_per_unit} тенге")
+        logger.info(f"     💵 Original cost: {original_price_per_unit} тенге x {abs(good['amount'])} = {original_total} тенге")
+        logger.info(f"     🎫 Discount: {good['discount']}% = {discount_amount} тенге")
         logger.info(f"     💰 Total to pay: {good_total} тенге")
 
     # Обработка платежей из transactions (уже извлеченных выше)
