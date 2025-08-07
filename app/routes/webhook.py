@@ -328,7 +328,8 @@ async def refresh_webkassa_api_key(db: AsyncSession) -> Optional[ApiKey]:
             
             # Обновляем сессию и получаем ключ
             await db.commit()
-            await db.rollback()  # Сбрасываем кеш сессии
+            # НЕ используем rollback() - это отменяет изменения!
+            # Вместо этого создаем новый запрос для получения свежих данных
             
             return await get_webkassa_api_key(db)
         else:
@@ -858,6 +859,9 @@ async def send_to_webkassa_with_auto_refresh(db: AsyncSession, webkassa_data: di
             if refreshed_key:
                 logger.info("✅ Successfully refreshed API key, retrying request...")
                 logger.info(f"🔄 Using token (first 20): {refreshed_key.api_key[:20]}...")
+                logger.info(f"🔄 Using token (last 20): ...{refreshed_key.api_key[-20:]}")
+                logger.info(f"🔄 Old token was: {api_token[:20]}...{api_token[-20:]}")
+                logger.info(f"🔄 Token changed: {refreshed_key.api_key != api_token}")
                 
                 # Повторяем запрос с обновленным ключом (может быть тот же самый)
                 retry_result = await send_to_webkassa(webkassa_data, refreshed_key.api_key, webhook_info)
