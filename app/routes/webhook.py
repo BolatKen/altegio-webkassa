@@ -459,7 +459,7 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
                 
                 raise ValueError(error_msg)
         
-        webkassa_token = api_key_record.user_id
+        webkassa_token = api_key_record.api_key
         logger.info(f"🔑 Using webkassa token from database: {webkassa_token}")
     
     logger.info(f"🔄 Starting data transformation for Webkassa")
@@ -656,7 +656,7 @@ async def prepare_webkassa_data_for_goods_sale(payload: AltegioWebhookPayload, a
                 
                 raise ValueError(error_msg)
         
-        webkassa_token = api_key_record.user_id
+        webkassa_token = api_key_record.api_key
         logger.info(f"🔑 Using webkassa token from database: {webkassa_token}")
     
     logger.info(f"🛒 Starting goods sale data transformation for Webkassa")
