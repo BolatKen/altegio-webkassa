@@ -538,8 +538,8 @@ async def prepare_webkassa_data(payload: AltegioWebhookPayload, altegio_document
         
         logger.info(f"  📦 Service {i+1}: {service.title}")
         logger.info(f"     💵 Original cost: {service.cost_per_unit} тенге x {service.amount} = {(service.cost_per_unit * service.amount)} тенге")
-        logger.info(f"     🎫 Discount: {service.discount}% = {(service.cost_per_unit * service.amount) - service.cost_to_pay} тенге")
-        logger.info(f"     💰 Final price per unit: {final_price_per_unit} тенге")
+        logger.info(f"     🎫 Discount: {service.discount}% = {discount_amount} тенге")
+        logger.info(f"     💰 Original price per unit: {original_price_per_unit} тенге")
         logger.info(f"     💰 Total to pay: {service_total} тенге")
 
     # Обработка товаров из webhook (goods_transactions)
